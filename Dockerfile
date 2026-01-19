@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create data directories
+# Ensure data directories exist (data folder is copied with COPY . .)
 RUN mkdir -p data/raw data/processed
 
 # Expose port
