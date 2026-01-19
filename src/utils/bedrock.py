@@ -1,5 +1,6 @@
 import boto3
 import json
+import os
 from typing import Dict, List, Optional
 
 class BedrockClient:
@@ -7,6 +8,38 @@ class BedrockClient:
         self.region = region
         self.model_id = model_id
         self.client = boto3.client('bedrock-runtime', region_name=region)
+        self.agent_client = boto3.client('bedrock-agent-runtime', region_name=region)
+        self.kb_id = os.getenv('BEDROCK_KB_ID')
+    
+    def retrieve(self, query: str, limit: int = 5) -> List[Dict]:
+        """Retrieve relevant chunks from Bedrock Knowledge Base"""
+        if not self.kb_id:
+            raise ValueError("BEDROCK_KB_ID environment variable not set")
+        
+        try:
+            response = self.agent_client.retrieve(
+                knowledgeBaseId=self.kb_id,
+                retrievalQuery={'text': query},
+                retrievalConfiguration={
+                    'vectorSearchConfiguration': {
+                        'numberOfResults': limit
+                    }
+                }
+            )
+            
+            results = []
+            for item in response.get('retrievalResults', []):
+                results.append({
+                    'text': item.get('content', {}).get('text', ''),
+                    'score': item.get('score', 0.0),
+                    'metadata': item.get('metadata', {}),
+                    'location': item.get('location', {})
+                })
+            return results
+        
+        except Exception as e:
+            print(f"Error retrieving from Knowledge Base: {e}")
+            return []
     
     def invoke(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.7) -> str:
         """Invoke Bedrock model with a prompt"""
