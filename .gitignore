@@ -1,3 +1,15 @@
 /.kiro
 /check_db.py
 /DATA_LOCATION.md
+
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Database
+*.db

@@ -3,14 +3,21 @@ from collections import Counter
 from datetime import datetime
 from storage.db import Database
 from typing import Dict, List
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class InsightGenerator:
     def __init__(self, db: Database = None):
         self.db = db or Database()
+        logger.insight("Insight generator initialized")
     
     def generate_insights(self, location_id: str, time_window: str = "all") -> Dict:
+        logger.insight(f"Generating insights for {location_id} (window={time_window})")
         reviews = self.db.get_reviews(location_id=location_id, limit=10000)
         if not reviews:
+            logger.warning(f"No reviews found for {location_id}")
             return {}
         
         insights = {
@@ -25,6 +32,7 @@ class InsightGenerator:
             'generated_at': datetime.now().isoformat()
         }
         self._cache_insights(insights)
+        logger.success(f"Generated insights for {location_id}: {len(reviews)} reviews analyzed")
         return insights
     
     def _rating_distribution(self, reviews: List[Dict]) -> Dict:
@@ -77,7 +85,7 @@ class InsightGenerator:
                     if topic not in seen_topics and len(quotes) < 5:
                         quotes.append({
                             'topic': topic,
-                            'quote': review['review_text'][:200] + '...' if len(review['review_text']) > 200 else review['review_text'],
+                            'quote': review['review_text'],
                             'rating': review['rating'],
                             'sentiment': enrichment.get('sentiment')
                         })

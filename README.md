@@ -38,4 +38,3 @@ python src/api/app.py
 - `src/monitor/` - Insights generation
 - `src/explore/` - Chat and filters
 - `src/api/` - FastAPI backend
-- `web/` - Frontend interface

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Review Intelligence API",
-    "description": "Dashboard APIs for review sentiment analysis and insights",
+    "description": "Dashboard APIs for review sentiment analysis, competitive intelligence, and insights",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -12,7 +12,12 @@
     },
     {
       "key": "locationId",
-      "value": "JFK",
+      "value": "ATL",
+      "type": "string"
+    },
+    {
+      "key": "brand",
+      "value": "avis",
       "type": "string"
     }
   ],
@@ -40,6 +45,7 @@
             "description": "Get complete dashboard summary with all key metrics including total reviews, average rating, sentiment breakdown, rating distribution, and top topics."
           }
         },
+
         {
           "name": "Get Trends",
           "request": {
@@ -154,6 +160,322 @@
             },
             "description": "Get most recent reviews with enrichments."
           }
+        },
+        {
+          "name": "Get Highlight Alert",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/dashboard/highlight?location_id={{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "dashboard", "highlight"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Filter by location"
+                }
+              ]
+            },
+            "description": "Get the most critical complaint highlight for dashboard alerts. Uses LLM to generate dynamic headlines."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Competitive Analysis",
+      "description": "Market and competitive intelligence endpoints. Compare our brands (Avis, Budget, Payless, Apex, Maggiore) against competitors across locations.",
+      "item": [
+        {
+          "name": "Competitive Summary",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/summary?location_id={{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "summary"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                }
+              ]
+            },
+            "description": "Market overview comparing our brands vs competitors. Returns avg rating, review count, and sentiment breakdown per brand, split into our_brands and competitors."
+          }
+        },
+        {
+          "name": "Competitive Summary (All Markets)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "summary"]
+            },
+            "description": "Market overview across all locations. Omit location_id to see the global competitive picture."
+          }
+        },
+        {
+          "name": "Topic Comparison (All Brands)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/topics?location_id={{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "topics"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                }
+              ]
+            },
+            "description": "Compare topic distribution across all brands at a location. Shows top topics, top complaints, and top praise per brand — useful for gap analysis."
+          }
+        },
+        {
+          "name": "Topic Comparison (Single Brand)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/topics?location_id={{locationId}}&brand={{brand}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "topics"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                },
+                {
+                  "key": "brand",
+                  "value": "{{brand}}",
+                  "description": "Filter to a specific brand (e.g. avis, hertz, enterprise)"
+                }
+              ]
+            },
+            "description": "Get topic breakdown for a single brand. Useful for deep-diving into a specific competitor."
+          }
+        },
+        {
+          "name": "Competitive Trends (Monthly)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/trends?location_id={{locationId}}&period=month",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "trends"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                },
+                {
+                  "key": "period",
+                  "value": "month",
+                  "description": "Grouping period: month or day"
+                }
+              ]
+            },
+            "description": "Rating trends over time per brand. Spot who's improving or declining in a market."
+          }
+        },
+        {
+          "name": "Competitive Trends (Daily)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/trends?location_id={{locationId}}&period=day",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "trends"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                },
+                {
+                  "key": "period",
+                  "value": "day",
+                  "description": "Grouping period: month or day"
+                }
+              ]
+            },
+            "description": "Daily rating trends per brand for granular competitive tracking."
+          }
+        },
+        {
+          "name": "Gap Analysis",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/gap-analysis?location_id={{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "gap-analysis"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                }
+              ]
+            },
+            "description": "Identifies topics where competitors outperform us (weaknesses) and where we're stronger (strengths). Returns gap_score per topic: positive means competitors are better, negative means we're better."
+          }
+        },
+        {
+          "name": "Gap Analysis (All Markets)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/gap-analysis",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "gap-analysis"]
+            },
+            "description": "Global gap analysis across all markets. Identifies systemic strengths and weaknesses vs competitors."
+          }
+        },
+        {
+          "name": "Market Position",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/market-position?location_id={{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "market-position"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Optional: Scope to a specific market/location"
+                }
+              ]
+            },
+            "description": "Market share and positioning per brand. Shows review volume share, avg rating, rating rank, and date range of reviews."
+          }
+        },
+        {
+          "name": "Market Position (All Markets)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/competitive/market-position",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "competitive", "market-position"]
+            },
+            "description": "Global market position across all locations."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Ingestion",
+      "item": [
+        {
+          "name": "Get Pending Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ingestion/pending",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ingestion", "pending"]
+            },
+            "description": "List S3 files that haven't been processed yet. Now returns brand and is_competitor metadata extracted from the S3 path structure (source/brand/filename.json)."
+          }
+        },
+        {
+          "name": "Process Files",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"s3_keys\": [\"google/avis/ATL_2026-02-12_33.6407_-84.4277.json\"],\n  \"enrich\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ingestion/process",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ingestion", "process"]
+            },
+            "description": "Process selected S3 files through the ingestion pipeline. Downloads from S3, parses reviews, extracts brand from path, classifies as our brand or competitor, and enriches with LLM."
+          }
+        },
+        {
+          "name": "Process Files (Competitor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"s3_keys\": [\"google/hertz/ATL_hertz_2026-02-12_33.6407_-84.4277.json\"],\n  \"enrich\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ingestion/process",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ingestion", "process"]
+            },
+            "description": "Process a competitor's review file. Brand 'hertz' is auto-classified as is_competitor=true since it's not in our brands (Avis, Budget, Payless, Apex, Maggiore)."
+          }
+        },
+        {
+          "name": "Get Ingestion History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ingestion/history?limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ingestion", "history"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max records to return (up to 200)"
+                }
+              ]
+            },
+            "description": "Get recent ingestion history showing processed files, their status, brand, and competitor classification."
+          }
+        },
+        {
+          "name": "Get Ingestion Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ingestion/status/google/avis/ATL_2026-02-12_33.6407_-84.4277.json",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ingestion", "status", "google", "avis", "ATL_2026-02-12_33.6407_-84.4277.json"]
+            },
+            "description": "Get the ingestion status of a specific S3 file. Replace the path with your S3 key."
+          }
         }
       ]
     },
@@ -170,7 +492,29 @@
               "host": ["{{baseUrl}}"],
               "path": ["api", "locations"]
             },
-            "description": "Get all available locations."
+            "description": "Get all available locations with coordinates."
+          }
+        },
+        {
+          "name": "Update Location",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Hartsfield-Jackson Atlanta International Airport\",\n  \"address\": \"6000 N Terminal Pkwy, Atlanta, GA 30320, USA\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/locations/{{locationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "locations", "{{locationId}}"]
+            },
+            "description": "Update location details (name, address, latitude, longitude). All fields are optional - only provided fields will be updated."
           }
         },
         {
@@ -199,7 +543,7 @@
                 {
                   "key": "regenerate",
                   "value": "false",
-                  "description": "Set to true to regenerate insights"
+                  "description": "Set to true to regenerate insights using LLM"
                 }
               ]
             },
@@ -237,13 +581,115 @@
                   "description": "Filter by sentiment: positive, negative, neutral"
                 },
                 {
+                  "key": "brand",
+                  "value": "",
+                  "description": "Filter by brand (e.g. avis, hertz, enterprise). Leave empty for all brands.",
+                  "disabled": true
+                },
+                {
+                  "key": "is_competitor",
+                  "value": "",
+                  "description": "Filter by competitor flag: true for competitors only, false for our brands only. Leave empty for all.",
+                  "disabled": true
+                },
+                {
                   "key": "limit",
                   "value": "50",
                   "description": "Max results (up to 1000)"
                 }
               ]
             },
-            "description": "Get reviews with various filters."
+            "description": "Get reviews with various filters including brand and competitor classification."
+          }
+        },
+        {
+          "name": "Get Reviews (Our Brands Only)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reviews?location_id={{locationId}}&is_competitor=false&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reviews"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Filter by location"
+                },
+                {
+                  "key": "is_competitor",
+                  "value": "false",
+                  "description": "false = our brands only (Avis, Budget, Payless, Apex, Maggiore)"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max results (up to 1000)"
+                }
+              ]
+            },
+            "description": "Get reviews for our brands only (Avis, Budget, Payless, Apex, Maggiore)."
+          }
+        },
+        {
+          "name": "Get Reviews (Competitors Only)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reviews?location_id={{locationId}}&is_competitor=true&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reviews"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Filter by location"
+                },
+                {
+                  "key": "is_competitor",
+                  "value": "true",
+                  "description": "true = competitor brands only"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max results (up to 1000)"
+                }
+              ]
+            },
+            "description": "Get reviews for competitor brands only."
+          }
+        },
+        {
+          "name": "Get Reviews (By Brand)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reviews?location_id={{locationId}}&brand=hertz&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "reviews"],
+              "query": [
+                {
+                  "key": "location_id",
+                  "value": "{{locationId}}",
+                  "description": "Filter by location"
+                },
+                {
+                  "key": "brand",
+                  "value": "hertz",
+                  "description": "Filter to a specific brand"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max results (up to 1000)"
+                }
+              ]
+            },
+            "description": "Get reviews for a specific brand at a location."
           }
         }
       ]
@@ -263,7 +709,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"query\": \"What are the main complaints about wait times?\",\n  \"location_id\": \"JFK\",\n  \"use_semantic\": false\n}"
+              "raw": "{\n  \"query\": \"What are the main complaints about wait times?\",\n  \"location_id\": \"ATL\",\n  \"use_semantic\": false\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/chat",

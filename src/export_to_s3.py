@@ -1,126 +1,58 @@
 """
-Export reviews database to JSON and upload to S3 for Knowledge Base ingestion.
+Backfill tool - Export all enriched reviews to KB S3 bucket.
+
+This is a standalone script for bulk re-exporting. During normal operation,
+the pipeline exports automatically after enrichment.
 
 Usage:
-    python src/export_to_s3.py <bucket-name> [--prefix path/to/folder] [--by-location]
-    
-Example:
-    python src/export_to_s3.py my-kb-bucket --prefix reviews/
-    python src/export_to_s3.py my-kb-bucket --prefix reviews/ --by-location
+    python src/export_to_s3.py
+    python src/export_to_s3.py --brand avis
+    python src/export_to_s3.py --location ATL
 """
-import sqlite3
-import json
 import argparse
+import sys
 from pathlib import Path
-from typing import Dict, List
+from dotenv import load_dotenv
 
-import boto3
+load_dotenv()
 
+sys.path.insert(0, str(Path(__file__).parent))
 
-def get_all_locations(db_path: str) -> List[str]:
-    """Get all unique location IDs from the database."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT location_id FROM reviews")
-    locations = [row[0] for row in cursor.fetchall()]
-    conn.close()
-    return locations
+from storage.db import Database
+from ingestion.kb_exporter import KBExporter
+from utils.logger import get_logger
 
-
-def export_reviews_to_json(db_path: str, output_path: str, location_id: str = None) -> int:
-    """Export reviews with enrichments to JSON format, optionally filtered by location."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    query = """
-        SELECT 
-            r.review_id, r.location_id, r.rating, r.reviewer_name,
-            r.review_date, r.review_text,
-            e.sentiment, e.sentiment_score, e.topics, e.entities
-        FROM reviews r
-        LEFT JOIN enrichments e ON r.review_id = e.review_id
-    """
-    params = []
-    if location_id:
-        query += " WHERE r.location_id = ?"
-        params.append(location_id)
-
-    cursor.execute(query, params)
-
-    reviews = []
-    for row in cursor.fetchall():
-        reviews.append({
-            "review_id": row["review_id"],
-            "location_id": row["location_id"],
-            "rating": row["rating"],
-            "reviewer_name": row["reviewer_name"],
-            "review_date": row["review_date"],
-            "review_text": row["review_text"],
-            "sentiment": row["sentiment"],
-            "sentiment_score": row["sentiment_score"],
-            "topics": json.loads(row["topics"]) if row["topics"] else [],
-            "entities": json.loads(row["entities"]) if row["entities"] else []
-        })
-
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(reviews, f, indent=2)
-
-    conn.close()
-    return len(reviews)
-
-
-def upload_to_s3(file_path: str, bucket: str, key: str):
-    """Upload file to S3."""
-    s3 = boto3.client("s3")
-    s3.upload_file(file_path, bucket, key)
-    print(f"[OK] Uploaded to s3://{bucket}/{key}")
+logger = get_logger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export reviews to S3 for Knowledge Base")
-    parser.add_argument("bucket", help="S3 bucket name")
-    parser.add_argument("--prefix", default="", help="S3 key prefix (folder path)")
-    parser.add_argument("--db", default="data/reviews.db", help="Path to SQLite database")
-    parser.add_argument("--by-location", action="store_true", 
-                        help="Export separate JSON files per location")
+    parser = argparse.ArgumentParser(description="Backfill KB S3 bucket with enriched reviews")
+    parser.add_argument("--location", help="Export only this location (e.g. ATL)")
+    parser.add_argument("--brand", help="Export only this brand (e.g. avis)")
     args = parser.parse_args()
 
-    if args.by_location:
-        print("Step 1: Getting all locations...")
-        locations = get_all_locations(args.db)
-        print(f"[OK] Found {len(locations)} locations: {', '.join(locations)}")
+    db = Database()
+    exporter = KBExporter(db)
 
-        print("\nStep 2: Exporting reviews by location...")
-        total_count = 0
-        exported_files = []
-        
-        for location_id in locations:
-            output_file = f"data/processed/reviews_{location_id}.json"
-            count = export_reviews_to_json(args.db, output_file, location_id)
-            total_count += count
-            exported_files.append((output_file, location_id, count))
-            print(f"  [OK] {location_id}: {count} reviews -> {output_file}")
+    # Get distinct location+brand combos from the DB
+    with db.get_session() as session:
+        from storage.models import Review
+        query = session.query(Review.location_id, Review.brand).distinct()
+        if args.location:
+            query = query.filter(Review.location_id == args.location.upper())
+        if args.brand:
+            query = query.filter(Review.brand == args.brand.lower())
+        combos = query.all()
 
-        print("\nStep 3: Uploading to S3...")
-        for output_file, location_id, count in exported_files:
-            s3_key = f"{args.prefix}reviews_{location_id}.json".lstrip("/")
-            upload_to_s3(output_file, args.bucket, s3_key)
+    logger.start(f"Found {len(combos)} location/brand combinations to export")
 
-        print(f"\n[COMPLETE] {total_count} reviews across {len(locations)} locations ready for Knowledge Base ingestion")
-    else:
-        output_file = "data/processed/reviews_export.json"
-        
-        print("Step 1: Exporting reviews to JSON...")
-        count = export_reviews_to_json(args.db, output_file)
-        print(f"[OK] Exported {count} reviews to {output_file}")
+    total_reviews = 0
+    for location_id, brand in combos:
+        result = exporter.export_location(location_id, brand)
+        if result:
+            total_reviews += result["review_count"]
 
-        print("Step 2: Uploading to S3...")
-        s3_key = f"{args.prefix}reviews_export.json".lstrip("/")
-        upload_to_s3(output_file, args.bucket, s3_key)
-
-        print(f"\n[COMPLETE] {count} reviews ready for Knowledge Base ingestion")
+    logger.complete(f"Backfill done. Exported {total_reviews} reviews across {len(combos)} files.")
 
 
 if __name__ == "__main__":
