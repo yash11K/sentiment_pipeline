@@ -77,13 +77,15 @@ class IngestionPipeline:
 
         logger.info(f"📍 Location: {location_id}, Source: {source}, Brand: {brand or 'unknown'}, Competitor: {is_competitor}")
 
-        # Auto-populate locations table if coordinates are available
+        # Auto-populate locations table with brand info
+        self.db.upsert_location(
+            location_id=location_id,
+            latitude=latitude,
+            longitude=longitude,
+            brand=brand,
+            is_competitor=is_competitor
+        )
         if latitude is not None and longitude is not None:
-            self.db.upsert_location(
-                location_id=location_id,
-                latitude=latitude,
-                longitude=longitude
-            )
             logger.info(f"📍 Location coordinates saved: ({latitude}, {longitude})")
 
         # Mark as processing

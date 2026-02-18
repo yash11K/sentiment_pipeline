@@ -52,13 +52,19 @@ class Database:
     # ============ REVIEW METHODS ============
     
     def insert_review(self, review: Dict) -> int:
-        """Insert a new review, or skip if it already exists"""
+        """Insert a new review, or update brand info if it already exists"""
         with self.get_session() as session:
             existing = session.query(Review).filter_by(
                 review_id=review.get('review_id')
             ).first()
 
             if existing:
+                # Backfill brand/competitor info if the existing row lacks it
+                new_brand = review.get('brand')
+                if new_brand and not existing.brand:
+                    existing.brand = new_brand
+                    existing.is_competitor = review.get('is_competitor', False)
+                    session.flush()
                 return existing.id
 
             db_review = Review(
@@ -219,8 +225,10 @@ class Database:
     
     def upsert_location(self, location_id: str, name: str = None,
                         latitude: float = None, longitude: float = None,
-                        address: str = None):
-        """Insert or update location metadata. Uses AI to get name/address if not provided."""
+                        address: str = None, brand: str = None,
+                        is_competitor: bool = False):
+        """Insert or update location metadata. Merges brand into brands list.
+        Uses AI to get name/address if not provided on first insert."""
         with self.get_session() as session:
             location = session.query(Location).filter(
                 Location.location_id == location_id
@@ -231,6 +239,13 @@ class Database:
                 if latitude: location.latitude = latitude
                 if longitude: location.longitude = longitude
                 if address: location.address = address
+                # Merge brand into existing brands list
+                if brand:
+                    existing_brands = json.loads(location.brands) if location.brands else []
+                    brand_names = {b['brand'] for b in existing_brands}
+                    if brand.lower() not in brand_names:
+                        existing_brands.append({'brand': brand.lower(), 'is_competitor': is_competitor})
+                        location.brands = json.dumps(existing_brands)
             else:
                 # Use AI to get name and address if not provided
                 if not name or not address:
@@ -242,12 +257,14 @@ class Database:
                     if not address:
                         address = location_info.get('address', location_id)
                 
+                brands_list = [{'brand': brand.lower(), 'is_competitor': is_competitor}] if brand else []
                 location = Location(
                     location_id=location_id,
                     name=name,
                     latitude=latitude,
                     longitude=longitude,
-                    address=address
+                    address=address,
+                    brands=json.dumps(brands_list)
                 )
                 session.add(location)
     
@@ -273,57 +290,24 @@ class Database:
                 location.address = address
             
             session.flush()
-            return {
-                'location_id': location.location_id,
-                'name': location.name,
-                'latitude': location.latitude,
-                'longitude': location.longitude,
-                'address': location.address
-            }
+            return self._location_to_dict(location)
     
-    def get_locations_with_coords(self) -> List[Dict]:
-        """Get all locations with their coordinates"""
+    def get_all_locations(self) -> List[Dict]:
+        """Get all locations directly from the locations table — no joins needed."""
         with self.get_session() as session:
-            # Get distinct location_ids from reviews with location data
-            results = session.query(
-                Review.location_id,
-                Location.name,
-                Location.latitude,
-                Location.longitude,
-                Location.address
-            ).outerjoin(
-                Location, Review.location_id == Location.location_id
-            ).distinct(Review.location_id).all()
-            
-            return [
-                {
-                    'location_id': r.location_id,
-                    'name': r.name,
-                    'latitude': r.latitude,
-                    'longitude': r.longitude,
-                    'address': r.address
-                }
-                for r in results
-            ]
-
-    def get_brands_by_location(self) -> Dict[str, List[Dict]]:
-        """Get distinct brands per location with competitor flag."""
-        with self.get_session() as session:
-            results = session.query(
-                Review.location_id,
-                Review.brand,
-                Review.is_competitor
-            ).filter(
-                Review.brand.isnot(None)
-            ).distinct(Review.location_id, Review.brand).all()
-
-            brands_map: Dict[str, List[Dict]] = {}
-            for r in results:
-                brands_map.setdefault(r.location_id, []).append({
-                    'brand': r.brand,
-                    'is_competitor': r.is_competitor
-                })
-            return brands_map
+            locations = session.query(Location).all()
+            return [self._location_to_dict(loc) for loc in locations]
+    
+    def _location_to_dict(self, location: Location) -> Dict:
+        """Convert Location model to dictionary."""
+        return {
+            'location_id': location.location_id,
+            'name': location.name,
+            'latitude': location.latitude,
+            'longitude': location.longitude,
+            'address': location.address,
+            'brands': json.loads(location.brands) if location.brands else []
+        }
 
     
     # ============ INGESTION FILE METHODS ============

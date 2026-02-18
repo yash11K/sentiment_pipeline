@@ -89,14 +89,16 @@ class Embedding(Base):
 
 class Location(Base):
     __tablename__ = 'locations'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     location_id = Column(String(10), unique=True, nullable=False)
     name = Column(String(255))
     latitude = Column(Float)
     longitude = Column(Float)
     address = Column(Text)
+    brands = Column(Text)  # JSON array: [{"brand": "avis", "is_competitor": false}, ...]
     created_at = Column(DateTime, default=datetime.utcnow)
+
 
 
 class IngestionFile(Base):

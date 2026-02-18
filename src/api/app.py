@@ -58,11 +58,8 @@ async def home():
 
 @app.get("/api/locations")
 async def get_locations():
-    """Get all locations with coordinates for map display"""
-    locations = db.get_locations_with_coords()
-    brands_map = db.get_brands_by_location()
-    for loc in locations:
-        loc['brands'] = brands_map.get(loc['location_id'], [])
+    """Get all locations with coordinates and brands"""
+    locations = db.get_all_locations()
     return {"locations": locations}
 
 
@@ -152,14 +149,21 @@ async def get_stats(location_id: str):
 # ============ DASHBOARD APIs ============
 
 @app.get("/api/dashboard/summary")
-async def get_dashboard_summary(location_id: Optional[str] = None):
+async def get_dashboard_summary(location_id: Optional[str] = None, brand: Optional[str] = None):
     """Get complete dashboard summary with all key metrics"""
     from sqlalchemy import text
     
     with db.get_session() as session:
         # Base query filter
-        location_filter = "WHERE r.location_id = :loc" if location_id else ""
-        params = {"loc": location_id} if location_id else {}
+        conditions = []
+        params = {}
+        if location_id:
+            conditions.append("r.location_id = :loc")
+            params["loc"] = location_id
+        if brand:
+            conditions.append("r.brand = :brand")
+            params["brand"] = brand
+        location_filter = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         
         # Total reviews and average rating
         result = session.execute(text(f"""
@@ -209,7 +213,7 @@ async def get_dashboard_summary(location_id: Optional[str] = None):
 
 
 @app.get("/api/dashboard/trends")
-async def get_trends(location_id: Optional[str] = None, period: str = "month"):
+async def get_trends(location_id: Optional[str] = None, period: str = "month", brand: Optional[str] = None):
     """Get rating and sentiment trends over time"""
     from sqlalchemy import text
     
@@ -221,8 +225,15 @@ async def get_trends(location_id: Optional[str] = None, period: str = "month"):
     else:  # month
         date_format = "TO_CHAR(r.review_date::date, 'YYYY-MM')"
     
-    location_filter = "WHERE r.location_id = :loc" if location_id else ""
-    params = {"loc": location_id} if location_id else {}
+    conditions = []
+    params = {}
+    if location_id:
+        conditions.append("r.location_id = :loc")
+        params["loc"] = location_id
+    if brand:
+        conditions.append("r.brand = :brand")
+        params["brand"] = brand
+    location_filter = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     
     with db.get_session() as session:
         # Rating trends
@@ -266,12 +277,19 @@ async def get_trends(location_id: Optional[str] = None, period: str = "month"):
 
 
 @app.get("/api/dashboard/topics")
-async def get_topic_analysis(location_id: Optional[str] = None):
+async def get_topic_analysis(location_id: Optional[str] = None, brand: Optional[str] = None):
     """Get detailed topic analysis with sentiment correlation"""
     from sqlalchemy import text
     
-    location_filter = "WHERE r.location_id = :loc" if location_id else ""
-    params = {"loc": location_id} if location_id else {}
+    conditions = []
+    params = {}
+    if location_id:
+        conditions.append("r.location_id = :loc")
+        params["loc"] = location_id
+    if brand:
+        conditions.append("r.brand = :brand")
+        params["brand"] = brand
+    location_filter = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     
     with db.get_session() as session:
         result = session.execute(text(f"""
@@ -354,12 +372,19 @@ async def get_reviews_by_topic(topic: str, location_id: Optional[str] = None, li
 
 
 @app.get("/api/dashboard/sentiment-details")
-async def get_sentiment_details(location_id: Optional[str] = None):
+async def get_sentiment_details(location_id: Optional[str] = None, brand: Optional[str] = None):
     """Get detailed sentiment analysis with score distribution"""
     from sqlalchemy import text
     
-    location_filter = "WHERE r.location_id = :loc" if location_id else ""
-    params = {"loc": location_id} if location_id else {}
+    conditions = []
+    params = {}
+    if location_id:
+        conditions.append("r.location_id = :loc")
+        params["loc"] = location_id
+    if brand:
+        conditions.append("r.brand = :brand")
+        params["brand"] = brand
+    location_filter = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     
     with db.get_session() as session:
         result = session.execute(text(f"""
@@ -449,7 +474,7 @@ HIGHLIGHT_QUERIES = [
 
 
 @app.get("/api/dashboard/highlight")
-async def get_highlight(location_id: Optional[str] = None):
+async def get_highlight(location_id: Optional[str] = None, brand: Optional[str] = None):
     """Get the most critical complaint highlight for the dashboard alert"""
     from utils.bedrock import BedrockClient
     from sqlalchemy import text
@@ -457,8 +482,14 @@ async def get_highlight(location_id: Optional[str] = None):
     bedrock = BedrockClient()
     
     # Gather complaint stats for each topic
-    location_filter = "AND r.location_id = :loc" if location_id else ""
-    base_params = {"loc": location_id} if location_id else {}
+    extra_filters = ""
+    base_params = {}
+    if location_id:
+        extra_filters += " AND r.location_id = :loc"
+        base_params["loc"] = location_id
+    if brand:
+        extra_filters += " AND r.brand = :brand"
+        base_params["brand"] = brand
     
     topic_complaints = []
     
@@ -474,7 +505,7 @@ async def get_highlight(location_id: Optional[str] = None):
                 JOIN enrichments e ON r.review_id = e.review_id
                 WHERE e.sentiment = 'negative'
                 AND e.topics LIKE :topic_pattern
-                {location_filter}
+                {extra_filters}
             """), params)
             
             row = result.fetchone()
@@ -503,7 +534,7 @@ async def get_highlight(location_id: Optional[str] = None):
             JOIN enrichments e ON r.review_id = e.review_id
             WHERE e.sentiment = 'negative'
             AND e.topics LIKE :topic_pattern
-            {location_filter}
+            {extra_filters}
             ORDER BY e.sentiment_score ASC
             LIMIT 1
         """), params)
