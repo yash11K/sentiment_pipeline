@@ -3,7 +3,7 @@ SQLAlchemy ORM Models for Review Intelligence
 """
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, String, Float, Text, Boolean, DateTime, 
+    Column, Integer, String, Float, Text, Boolean, DateTime, Date,
     ForeignKey, create_engine, Index
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
@@ -19,14 +19,14 @@ class Review(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     location_id = Column(String(10), nullable=False, index=True)
     source = Column(String(50), default='google')
-    brand = Column(String(100), nullable=True, index=True)
+    brand = Column(String(100), nullable=False, index=True)
     is_competitor = Column(Boolean, default=False, index=True)
     review_id = Column(String(255), unique=True, nullable=False)
     rating = Column(Float, nullable=False)
     review_text = Column(Text)
     reviewer_name = Column(String(255))
     reviewer_type = Column(String(50))
-    review_date = Column(String(50))
+    review_date = Column(Date)
     relative_date = Column(String(100))
     language = Column(String(10))
     raw_json = Column(Text)
@@ -47,7 +47,7 @@ class Enrichment(Base):
     __tablename__ = 'enrichments'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    review_id = Column(String(255), ForeignKey('reviews.review_id'), unique=True, nullable=False)
+    review_id = Column(String(255), ForeignKey('reviews.review_id', ondelete='CASCADE'), unique=True, nullable=False)
     topics = Column(Text)  # JSON array
     sentiment = Column(String(20))
     sentiment_score = Column(Float)
@@ -80,7 +80,7 @@ class Embedding(Base):
     __tablename__ = 'embeddings'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    review_id = Column(String(255), ForeignKey('reviews.review_id'), unique=True, nullable=False)
+    review_id = Column(String(255), ForeignKey('reviews.review_id', ondelete='CASCADE'), unique=True, nullable=False)
     embedding = Column(Text)  # Store as JSON string for PostgreSQL compatibility
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -108,7 +108,7 @@ class IngestionFile(Base):
     s3_key = Column(String(500), unique=True, nullable=False)
     location_id = Column(String(10), nullable=False)
     source = Column(String(50), nullable=False)
-    brand = Column(String(100), nullable=True)
+    brand = Column(String(100), nullable=False)
     is_competitor = Column(Boolean, default=False)
     scrape_date = Column(String(50))
     status = Column(String(20), default='pending')
@@ -126,26 +126,9 @@ class IngestionFile(Base):
 
 # Database connection helper
 def get_database_url():
-    """
-    Get database URL based on environment.
-
-    Resolution order:
-    1. DATABASE_URL (explicit override)
-    2. APP_ENV -> DATABASE_URL_DEV or DATABASE_URL_PROD
-    3. SQLite fallback
-    """
-    # Explicit override takes priority
-    explicit = os.getenv('DATABASE_URL')
-    if explicit:
-        return explicit
-
-    env = os.getenv('APP_ENV', 'dev').lower()
-    if env == 'production':
-        url = os.getenv('DATABASE_URL_PROD')
-    else:
-        url = os.getenv('DATABASE_URL_DEV')
-
-    return url or 'sqlite:///data/reviews.db'
+    """Get database URL based on environment via centralized config."""
+    from config import config
+    return config.DATABASE_URL
 
 
 def create_db_engine(database_url: str = None):

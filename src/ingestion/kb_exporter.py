@@ -23,16 +23,17 @@ logger = get_logger(__name__)
 
 class KBExporter:
     def __init__(self, db: Database = None, bucket: str = None, prefix: str = None,
-                 region: str = "us-east-1"):
+                 region: str = None):
+        from config import config
         self.db = db or Database()
-        self.bucket = bucket or os.getenv('KB_S3_BUCKET', 'google-structured-reviews')
-        self.prefix = prefix or os.getenv('KB_S3_PREFIX', 'reviews/')
-        self.s3_client = boto3.client('s3', region_name=region)
+        self.bucket = bucket or config.KB_S3_BUCKET
+        self.prefix = prefix or config.KB_S3_PREFIX
+        self.s3_client = boto3.client('s3', region_name=region or config.AWS_REGION)
         logger.start(f"KB exporter initialized (bucket={self.bucket}, prefix={self.prefix})")
 
     def _build_s3_key(self, location_id: str, brand: str) -> str:
         """Build S3 key: {prefix}{brand}/reviews_{LOCODE}.json"""
-        brand_folder = (brand or 'unknown').lower()
+        brand_folder = brand.lower()
         return f"{self.prefix}{brand_folder}/reviews_{location_id.upper()}.json"
 
     def export_location(self, location_id: str, brand: str = None) -> Optional[Dict]:

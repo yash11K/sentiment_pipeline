@@ -55,13 +55,14 @@ class S3ReviewSource:
         re.IGNORECASE
     )
 
-    def __init__(self, bucket_name: str, prefix: str = "", region: str = "us-east-1"):
-        self.bucket_name = bucket_name
-        self.prefix = prefix
-        self.region = region
-        self.s3_client = boto3.client('s3', region_name=region)
+    def __init__(self, bucket_name: str = None, prefix: str = None, region: str = None):
+        from config import config
+        self.bucket_name = bucket_name or config.REVIEWS_S3_BUCKET
+        self.prefix = prefix if prefix is not None else config.REVIEWS_S3_PREFIX
+        self.region = region or config.AWS_REGION
+        self.s3_client = boto3.client('s3', region_name=self.region)
         self.db = Database()
-        logger.s3(f"S3 source initialized (bucket={bucket_name}, prefix={prefix})")
+        logger.s3(f"S3 source initialized (bucket={self.bucket_name}, prefix={self.prefix})")
 
     @staticmethod
     def classify_brand(brand_name: str) -> bool:

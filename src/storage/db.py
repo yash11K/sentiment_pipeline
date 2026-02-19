@@ -51,21 +51,16 @@ class Database:
     
     # ============ REVIEW METHODS ============
     
-    def insert_review(self, review: Dict) -> int:
-        """Insert a new review, or update brand info if it already exists"""
+    def insert_review(self, review: Dict) -> tuple:
+        """Insert a new review, or skip entirely if review_id already exists.
+        Returns (id, is_new) where is_new is True for new inserts."""
         with self.get_session() as session:
             existing = session.query(Review).filter_by(
                 review_id=review.get('review_id')
             ).first()
 
             if existing:
-                # Backfill brand/competitor info if the existing row lacks it
-                new_brand = review.get('brand')
-                if new_brand and not existing.brand:
-                    existing.brand = new_brand
-                    existing.is_competitor = review.get('is_competitor', False)
-                    session.flush()
-                return existing.id
+                return (existing.id, False)
 
             db_review = Review(
                 location_id=review.get('location_id'),
@@ -84,7 +79,7 @@ class Database:
             )
             session.add(db_review)
             session.flush()
-            return db_review.id
+            return (db_review.id, True)
     
     def get_reviews(self, location_id: Optional[str] = None,
                     min_rating: Optional[float] = None,
@@ -368,6 +363,17 @@ class Database:
                 IngestionFile.status.in_(['completed', 'processing'])
             ).all()
             return [r.s3_key for r in records]
+    def delete_reviews_by_ids(self, review_ids: List[str]) -> int:
+        """Delete reviews by list of review_ids. CASCADE handles enrichments/embeddings."""
+        if not review_ids:
+            return 0
+        with self.get_session() as session:
+            deleted = session.query(Review).filter(
+                Review.review_id.in_(review_ids)
+            ).delete(synchronize_session='fetch')
+            return deleted
+
+
     
     def get_ingestion_history(self, limit: int = 50) -> List[Dict]:
         """Get recent ingestion history"""

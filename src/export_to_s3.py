@@ -12,12 +12,10 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from config import config
 from storage.db import Database
 from ingestion.kb_exporter import KBExporter
 from utils.logger import get_logger

@@ -2,19 +2,29 @@ import boto3
 import json
 import os
 from typing import Dict, List, Optional
+from config import config
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class BedrockClient:
-    def __init__(self, region: str = "us-east-1", model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"):
-        self.region = region
-        self.model_id = model_id
-        self.client = boto3.client('bedrock-runtime', region_name=region)
-        self.agent_client = boto3.client('bedrock-agent-runtime', region_name=region)
-        self.kb_id = '4EJ0BSHUTO'
-        logger.start(f"Bedrock client initialized (region={region}, model={model_id})")
+    def __init__(self, region: str = None, model_id: str = None):
+        self.region = region or config.AWS_REGION
+        self.model_id = model_id or config.BEDROCK_MODEL_ID
+        self.client = boto3.client('bedrock-runtime', region_name=self.region)
+        self.agent_client = boto3.client('bedrock-agent-runtime', region_name=self.region)
+        self.kb_id = config.BEDROCK_KB_ID
+        logger.start(f"Bedrock client initialized (region={self.region}, model={self.model_id}, kb={self.kb_id})")
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        """Strip markdown code fences from LLM response before JSON parsing."""
+        import re
+        # Match ```json ... ``` or ``` ... ```
+        match = re.search(r'```(?:json)?\s*\n?(.*?)```', text, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return text.strip()
 
     def retrieve(self, query: str, limit: int = 5, location_id: str = None) -> List[Dict]:
         """Retrieve relevant chunks from Bedrock Knowledge Base"""
@@ -126,7 +136,7 @@ class BedrockClient:
 
         response = self.invoke(prompt, max_tokens=100, temperature=0.3)
         try:
-            return json.loads(response)
+            return json.loads(self._extract_json(response))
         except:
             return []
 
@@ -141,7 +151,7 @@ Format: {{"sentiment": "negative", "score": -0.8}}"""
 
         response = self.invoke(prompt, max_tokens=50, temperature=0.1)
         try:
-            return json.loads(response)
+            return json.loads(self._extract_json(response))
         except:
             return {"sentiment": "neutral", "score": 0.0}
 
@@ -156,39 +166,33 @@ Return ONLY a JSON array of entities, e.g., ["Preferred", "EZ Pass"]"""
 
         response = self.invoke(prompt, max_tokens=100, temperature=0.3)
         try:
-            return json.loads(response)
+            return json.loads(self._extract_json(response))
         except:
             return []
 
     def enrich_reviews_batch(self, reviews: List[Dict]) -> List[Dict]:
         """Enrich multiple reviews in a single LLM call with enhanced metadata.
-        Uses raw_json if available, falls back to review_text otherwise."""
+
+        Accepts pre-trimmed review dicts containing only:
+        review_id, rating, text, reviewer, relative_date.
+        The caller (enricher) is responsible for trimming before calling this method.
+        """
         reviews_text = ""
         for idx, review in enumerate(reviews, 1):
-            # Use raw_json if available, otherwise fall back to review_text
-            raw_json = review.get('raw_json')
-            if raw_json:
-                # Pass the raw JSON as-is for LLM to read naturally
-                reviews_text += f"""Review {idx} (ID: {review['review_id']}):
-{raw_json}
+            reviews_text += f"""Review {idx} (ID: {review['review_id']}, Rating: {review.get('rating')}):
+    {review.get('text') or ''}
 
-"""
-            else:
-                # Fallback to parsed fields
-                reviews_text += f"""Review {idx} (ID: {review['review_id']}, Rating: {review.get('rating')}):
-{review.get('review_text') or ''}
-
-"""
+    """
 
         prompt = f"""Analyze these car rental reviews and extract comprehensive insights for each.
 
-Topics (choose applicable): wait_times, staff_behavior, vehicle_condition, pricing_fees, reservation_issues, customer_service, cleanliness, preferred_program, tolls_epass, insurance, location_access, shuttle_service, upgrade_downgrade, damage_claims
+    Topics (choose applicable): wait_times, staff_behavior, vehicle_condition, pricing_fees, reservation_issues, customer_service, cleanliness, preferred_program, tolls_epass, insurance, location_access, shuttle_service, upgrade_downgrade, damage_claims
 
-{reviews_text}
+    {reviews_text}
 
-Return ONLY a JSON array with this exact structure:
-[
-  {{
+    Return ONLY a JSON array with this exact structure:
+    [
+      {{
     "review_id": "<id>",
     "topics": ["topic1", "topic2"],
     "sentiment": "positive|negative|neutral",
@@ -198,24 +202,24 @@ Return ONLY a JSON array with this exact structure:
     "urgency_level": "low|medium|high|critical",
     "actionable": true|false,
     "suggested_action": "brief action item if actionable, null otherwise"
-  }}
-]
+      }}
+    ]
 
-Guidelines:
-- urgency_level: critical=safety/legal issues, high=service failures affecting many, medium=individual complaints, low=minor feedback
-- actionable: true if the review suggests a specific improvement opportunity
-- key_phrases: 1-3 short phrases (max 8 words each) capturing the essence
-"""
+    Guidelines:
+    - urgency_level: critical=safety/legal issues, high=service failures affecting many, medium=individual complaints, low=minor feedback
+    - actionable: true if the review suggests a specific improvement opportunity
+    - key_phrases: 1-3 short phrases (max 8 words each) capturing the essence
+    """
 
         logger.llm("Calling AWS Bedrock (Claude)...")
         response = self.invoke(prompt, max_tokens=4000, temperature=0.3)
         logger.llm("Response received, parsing JSON...")
 
         try:
-            return json.loads(response)
+            return json.loads(self._extract_json(response))
         except Exception as e:
             logger.error(f"Error parsing response: {e}")
-            logger.debug(f"Raw response: {response[:200]}...")
+            logger.error(f"Raw response: {response[:500]}")
             return []
 
     def get_location_info(self, location_code: str) -> Dict:
@@ -240,7 +244,7 @@ Return ONLY the JSON object, no explanation."""
 
         response = self.invoke(prompt, max_tokens=200, temperature=0.1)
         try:
-            result = json.loads(response)
+            result = json.loads(self._extract_json(response))
             return {
                 "name": result.get("name", location_code),
                 "address": result.get("address", location_code)

@@ -11,7 +11,8 @@ from alembic import context
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from storage.models import Base, get_database_url
+from config import config as app_config
+from storage.models import Base
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,14 +20,9 @@ logger = get_logger(__name__)
 # this is the Alembic Config object
 config = context.config
 
-# Load .env so APP_ENV and DATABASE_URL_* are available
-from dotenv import load_dotenv
-load_dotenv()
-
-# Resolve database URL using the same logic as the app
-database_url = get_database_url()
-env_label = os.getenv('APP_ENV', 'dev').lower()
-logger.database(f"Alembic targeting {env_label} database")
+# Resolve database URL using centralized config
+database_url = app_config.DATABASE_URL
+logger.database(f"Alembic targeting {app_config.APP_ENV} database")
 config.set_main_option('sqlalchemy.url', database_url)
 
 # Interpret the config file for Python logging

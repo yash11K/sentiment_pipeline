@@ -10,11 +10,10 @@ import uuid
 import threading
 from pathlib import Path
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Configuration is loaded centrally
+from config import config
 
 from storage.db import Database
 from monitor.insights import InsightGenerator
@@ -55,6 +54,17 @@ class ChatRequest(BaseModel):
 @app.get("/")
 async def home():
     return {"status": "ok", "service": "Review Intelligence API"}
+
+@app.get("/api/test-bedrock")
+async def test_bedrock():
+    """Quick test to verify Bedrock model invocation works."""
+    from utils.bedrock import BedrockClient
+    try:
+        client = BedrockClient()
+        response = client.invoke("Say hello in one sentence.", max_tokens=50, temperature=0.1)
+        return {"status": "ok", "model": client.model_id, "response": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bedrock error: {str(e)}")
 
 @app.get("/api/locations")
 async def get_locations():
@@ -874,19 +884,17 @@ async def get_market_position(location_id: Optional[str] = None):
 
 # ============ INGESTION APIs ============
 
-# Configuration - can be overridden via environment variables
-import os
-S3_BUCKET = os.getenv("REVIEWS_S3_BUCKET", "review-intelligence-data")
-S3_PREFIX = os.getenv("REVIEWS_S3_PREFIX", "reviews/")
-S3_REGION = os.getenv("AWS_REGION", "us-east-1")
+# S3 configuration from centralized config
+S3_BUCKET = config.REVIEWS_S3_BUCKET
+S3_PREFIX = config.REVIEWS_S3_PREFIX
+S3_REGION = config.AWS_REGION
 
 
 class ProcessFilesRequest(BaseModel):
     s3_keys: List[str]
-    enrich: bool = True
 
 
-def run_ingestion_job(job_id: str, s3_keys: List[str], enrich: bool):
+def run_ingestion_job(job_id: str, s3_keys: List[str]):
     """Background task to run ingestion pipeline"""
     from ingestion.pipeline import IngestionPipeline
     
@@ -897,8 +905,8 @@ def run_ingestion_job(job_id: str, s3_keys: List[str], enrich: bool):
     logger.start(f"[Job {job_id}] Starting background ingestion for {len(s3_keys)} files...")
     
     try:
-        pipeline = IngestionPipeline(S3_BUCKET, S3_PREFIX, S3_REGION)
-        results = pipeline.process_files(s3_keys, enrich=enrich)
+        pipeline = IngestionPipeline()
+        results = pipeline.process_files(s3_keys)
         
         successful = [r for r in results if r['status'] == 'completed']
         failed = [r for r in results if r['status'] == 'failed']
@@ -967,11 +975,10 @@ async def process_files(request: ProcessFilesRequest, background_tasks: Backgrou
     1. Download JSON file from S3
     2. Validate file structure
     3. Parse and insert reviews into database
-    4. Enrich reviews with LLM (sentiment, topics, entities, etc.) if enrich=true
+    4. Enrich reviews with LLM (sentiment, topics, entities, etc.)
     
     Request body:
     - s3_keys: Array of S3 keys to process
-    - enrich: Whether to run LLM enrichment (default: true)
     """
     if not request.s3_keys:
         raise HTTPException(status_code=400, detail="No files specified for processing")
@@ -984,7 +991,6 @@ async def process_files(request: ProcessFilesRequest, background_tasks: Backgrou
             "job_id": job_id,
             "status": "queued",
             "s3_keys": request.s3_keys,
-            "enrich": request.enrich,
             "created_at": datetime.now().isoformat(),
             "started_at": None,
             "completed_at": None,
@@ -994,7 +1000,7 @@ async def process_files(request: ProcessFilesRequest, background_tasks: Backgrou
         }
     
     # Run in background thread (not blocking the event loop)
-    background_tasks.add_task(run_ingestion_job, job_id, request.s3_keys, request.enrich)
+    background_tasks.add_task(run_ingestion_job, job_id, request.s3_keys)
     
     logger.info(f"📋 Created ingestion job {job_id} for {len(request.s3_keys)} files")
     

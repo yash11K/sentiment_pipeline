@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from storage.db import Database
 from ingestion.parser import ReviewParser
-from ingestion.enricher import ReviewEnricher
+from ingestion.enricher import ReviewEnricher, EnrichmentError
 from ingestion.s3_source import S3ReviewSource
 from ingestion.kb_exporter import KBExporter
 from utils.logger import get_logger
@@ -19,15 +19,20 @@ logger = get_logger(__name__)
 
 
 class IngestionPipeline:
-    def __init__(self, bucket_name: str, prefix: str = "reviews/",
-                 region: str = "us-east-1", batch_size: int = 20):
+    def __init__(self, bucket_name: str = None, prefix: str = None,
+                 region: str = None, batch_size: int = 20):
+        from config import config
         self.db = Database()
         self.parser = ReviewParser(self.db)
         self.enricher = ReviewEnricher(self.db, batch_size=batch_size)
-        self.s3_source = S3ReviewSource(bucket_name, prefix, region)
-        self.kb_exporter = KBExporter(self.db, region=region)
+        self.s3_source = S3ReviewSource(
+            bucket_name or config.REVIEWS_S3_BUCKET,
+            prefix if prefix is not None else config.REVIEWS_S3_PREFIX,
+            region or config.AWS_REGION
+        )
+        self.kb_exporter = KBExporter(self.db, region=region or config.AWS_REGION)
         self.batch_size = batch_size
-        logger.start(f"Ingestion pipeline initialized (bucket={bucket_name}, batch_size={batch_size})")
+        logger.start(f"Ingestion pipeline initialized (bucket={self.s3_source.bucket_name}, batch_size={batch_size})")
 
     def get_pending_files(self) -> List[Dict]:
         """Get list of S3 files pending ingestion"""
@@ -37,9 +42,10 @@ class IngestionPipeline:
         """Get recent ingestion history"""
         return self.db.get_ingestion_history(limit)
 
-    def process_file(self, s3_key: str, enrich: bool = True) -> Dict:
+    def process_file(self, s3_key: str) -> Dict:
         """
         Process a single S3 file through the ingestion pipeline.
+        Enrichment is always performed — no option to skip.
 
         Returns dict with status, reviews_count, enriched_count, error
         """
@@ -75,7 +81,21 @@ class IngestionPipeline:
         latitude = metadata.get('latitude')
         longitude = metadata.get('longitude')
 
-        logger.info(f"📍 Location: {location_id}, Source: {source}, Brand: {brand or 'unknown'}, Competitor: {is_competitor}")
+        # Brand validation: fail file if brand is None
+        if brand is None:
+            result["status"] = "failed"
+            result["error"] = f"No brand found in S3 path for file: {s3_key}"
+            logger.error(result["error"])
+            self.db.upsert_ingestion_file(
+                s3_key=s3_key,
+                location_id=location_id,
+                source=source,
+                status="failed",
+                error_message=result["error"]
+            )
+            return result
+
+        logger.info(f"📍 Location: {location_id}, Source: {source}, Brand: {brand}, Competitor: {is_competitor}")
 
         # Auto-populate locations table with brand info
         self.db.upsert_location(
@@ -100,6 +120,8 @@ class IngestionPipeline:
             started_at=datetime.now().isoformat()
         )
 
+        new_review_ids = []
+
         try:
             # Download and validate file
             logger.progress("Downloading and validating file...")
@@ -111,21 +133,19 @@ class IngestionPipeline:
 
             # Parse and insert reviews
             logger.parse(f"Parsing reviews from {s3_key}...")
-            reviews_count = self.parser.ingest_data(
+            reviews_count, new_review_ids = self.parser.ingest_data(
                 data, location_id, source, scrape_date,
                 brand=brand, is_competitor=is_competitor
             )
             result["reviews_count"] = reviews_count
             logger.success(f"Inserted {reviews_count} reviews")
 
-            # Enrich reviews if requested
+            # Enrich reviews (mandatory — enrich any unenriched reviews for this location)
             enriched_count = 0
-            if enrich and reviews_count > 0:
-                logger.enrich(f"Enriching {reviews_count} reviews...")
-                enriched_count = self.enricher.enrich_all_reviews(
-                    location_id=location_id,
-                    limit=reviews_count
-                )
+            logger.enrich(f"Enriching unenriched reviews for {location_id}...")
+            enriched_count = self.enricher.enrich_all_reviews(
+                location_id=location_id
+            )
             result["enriched_count"] = enriched_count
 
             # Mark as completed
@@ -153,6 +173,12 @@ class IngestionPipeline:
                 completed_at=datetime.now().isoformat()
             )
 
+        except EnrichmentError as e:
+            # Enrichment failed after retries — rollback all reviews for this file
+            self._rollback_file(s3_key, new_review_ids, location_id, str(e), metadata, source, brand, is_competitor)
+            result["status"] = "failed"
+            result["error"] = str(e)
+
         except Exception as e:
             result["status"] = "failed"
             result["error"] = str(e)
@@ -170,20 +196,43 @@ class IngestionPipeline:
 
         return result
 
-    def process_files(self, s3_keys: List[str], enrich: bool = True) -> List[Dict]:
+    def _rollback_file(self, s3_key: str, review_ids: List[str],
+                       location_id: str, error: str, metadata: Dict,
+                       source: str, brand: str, is_competitor: bool):
+        """Delete all reviews for a file and mark ingestion_file as failed."""
+        logger.warning(f"Rolling back file {s3_key}: {error}")
+        try:
+            if review_ids:
+                deleted = self.db.delete_reviews_by_ids(review_ids)
+                logger.warning(f"Rolled back {deleted} reviews for {s3_key}")
+        except Exception as rollback_err:
+            logger.error(f"Rollback delete failed for {s3_key}: {rollback_err}")
+
+        self.db.upsert_ingestion_file(
+            s3_key=s3_key,
+            location_id=location_id,
+            source=source,
+            brand=brand,
+            is_competitor=is_competitor,
+            scrape_date=metadata.get('scrape_date_display'),
+            status="failed",
+            error_message=error
+        )
+
+    def process_files(self, s3_keys: List[str]) -> List[Dict]:
         """Process multiple S3 files"""
         logger.batch(f"Processing {len(s3_keys)} files...")
         results = []
         for i, s3_key in enumerate(s3_keys, 1):
             logger.progress(f"File {i}/{len(s3_keys)}: {s3_key}")
-            result = self.process_file(s3_key, enrich=enrich)
+            result = self.process_file(s3_key)
             results.append(result)
         logger.complete(f"Batch complete: {len(results)} files processed")
         return results
 
-    def process_all_pending(self, enrich: bool = True) -> List[Dict]:
+    def process_all_pending(self) -> List[Dict]:
         """Process all pending S3 files"""
         pending = self.get_pending_files()
         logger.info(f"📥 Found {len(pending)} pending files")
         s3_keys = [f['s3_key'] for f in pending]
-        return self.process_files(s3_keys, enrich=enrich)
+        return self.process_files(s3_keys)
