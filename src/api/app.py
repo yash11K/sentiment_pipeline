@@ -1055,6 +1055,176 @@ async def get_ingestion_status(s3_key: str):
     return record
 
 
+# ---------------------------------------------------------------------------
+# Reddit data (hardcoded)
+# ---------------------------------------------------------------------------
+
+REDDIT_POSTS = [
+    # r/travel
+    {"id": "travel_01", "subreddit": "r/travel", "title": "Avis car rental question", "score": 12, "comments": 15,
+     "sentiment": "neutral", "date": "2026-02-10T08:00:00Z", "url": "https://reddit.com/r/travel/comments/travel_01"},
+    {"id": "travel_02", "subreddit": "r/travel", "title": "Hertz Vs Avis car rental", "score": 7, "comments": 10,
+     "sentiment": "negative", "date": "2026-02-09T14:20:00Z", "url": "https://reddit.com/r/travel/comments/travel_02"},
+    {"id": "travel_03", "subreddit": "r/travel", "title": "Avis Rental car from US drive to Canada", "score": 5, "comments": 8,
+     "sentiment": "neutral", "date": "2026-02-08T11:00:00Z", "url": "https://reddit.com/r/travel/comments/travel_03"},
+    {"id": "travel_04", "subreddit": "r/travel", "title": "Avis Car Rental Advisory", "score": 9, "comments": 12,
+     "sentiment": "positive", "date": "2026-02-07T09:30:00Z", "url": "https://reddit.com/r/travel/comments/travel_04"},
+    {"id": "travel_05", "subreddit": "r/travel", "title": "Avis Car Rental", "score": 11, "comments": 6,
+     "sentiment": "negative", "date": "2026-02-06T16:45:00Z", "url": "https://reddit.com/r/travel/comments/travel_05"},
+    # r/TravelHacks
+    {"id": "thacks_01", "subreddit": "r/TravelHacks", "title": "First time car hire with Avis (USA - West Coast) - what pitfalls should I avoid?", "score": 15, "comments": 20,
+     "sentiment": "neutral", "date": "2026-02-10T07:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_01"},
+    {"id": "thacks_02", "subreddit": "r/TravelHacks", "title": "AVIS reputation", "score": 25, "comments": 30,
+     "sentiment": "negative", "date": "2026-02-09T12:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_02"},
+    {"id": "thacks_03", "subreddit": "r/TravelHacks", "title": "Why is AVIS so bad as of recent? Any reputable car companies to change to?", "score": 10, "comments": 15,
+     "sentiment": "negative", "date": "2026-02-08T10:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_03"},
+    {"id": "thacks_04", "subreddit": "r/TravelHacks", "title": "Avis Car Rental Early Return?", "score": 8, "comments": 10,
+     "sentiment": "neutral", "date": "2026-02-07T15:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_04"},
+    {"id": "thacks_05", "subreddit": "r/TravelHacks", "title": "Is Avis Mystery Car worth it?", "score": 6, "comments": 5,
+     "sentiment": "neutral", "date": "2026-02-06T09:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_05"},
+    {"id": "thacks_06", "subreddit": "r/TravelHacks", "title": "Avis/Budget claiming damage on a rental I returned 7 months ago.", "score": 11, "comments": 20,
+     "sentiment": "negative", "date": "2026-02-05T13:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_06"},
+    {"id": "thacks_07", "subreddit": "r/TravelHacks", "title": "If you are under 25, DO NOT RENT WITH AVIS", "score": 18, "comments": 25,
+     "sentiment": "negative", "date": "2026-02-04T11:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_07"},
+    # r/Scams
+    {"id": "scams_01", "subreddit": "r/Scams", "title": "Did AVIS Rent-a-Car try to pull a scam?", "score": 14, "comments": 22,
+     "sentiment": "negative", "date": "2026-02-10T06:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_01"},
+    {"id": "scams_02", "subreddit": "r/Scams", "title": "Dubai car rental scams.", "score": 10, "comments": 14,
+     "sentiment": "negative", "date": "2026-02-09T08:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_02"},
+    {"id": "scams_03", "subreddit": "r/Scams", "title": "Is this Italy traffic fine scam from Avis Rental Car?", "score": 12, "comments": 18,
+     "sentiment": "negative", "date": "2026-02-08T14:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_03"},
+    {"id": "scams_04", "subreddit": "r/Scams", "title": "Miami Car Rental Scam", "score": 9, "comments": 11,
+     "sentiment": "negative", "date": "2026-02-07T10:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_04"},
+    {"id": "scams_05", "subreddit": "r/Scams", "title": "Warning: www.rentcars.com is a SCAM", "score": 16, "comments": 24,
+     "sentiment": "negative", "date": "2026-02-06T12:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_05"},
+    # r/cars
+    {"id": "cars_01", "subreddit": "r/cars", "title": "Avis Car Rental: What is similar to a Mustang?", "score": 10, "comments": 15,
+     "sentiment": "neutral", "date": "2026-02-10T09:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_01"},
+    {"id": "cars_02", "subreddit": "r/cars", "title": "As a car guy, I get infuriated with the crappy cars Avis gives me when I go on work travel.", "score": 20, "comments": 30,
+     "sentiment": "negative", "date": "2026-02-09T11:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_02"},
+    {"id": "cars_03", "subreddit": "r/cars", "title": "This is why you get the damage waiver on your rental car.", "score": 15, "comments": 10,
+     "sentiment": "negative", "date": "2026-02-08T08:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_03"},
+    {"id": "cars_04", "subreddit": "r/cars", "title": "Which Rental Car Was Either Much Better or Much Worse than You Expected?", "score": 12, "comments": 20,
+     "sentiment": "neutral", "date": "2026-02-07T14:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_04"},
+    {"id": "cars_05", "subreddit": "r/cars", "title": "Anyone else notice, rental car companies are keeping cars longer?", "score": 10, "comments": 10,
+     "sentiment": "negative", "date": "2026-02-06T10:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_05"},
+    # r/IAmA
+    {"id": "iama_01", "subreddit": "r/IAmA", "title": "IamA Rental Car Agent for Avis-Budget Group. AMA!", "score": 25, "comments": 50,
+     "sentiment": "neutral", "date": "2026-02-10T10:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_01"},
+    {"id": "iama_02", "subreddit": "r/IAmA", "title": "I own and manage an AVIS/BUDGET Car and Truck Rental store for the last 3 years! Ask Me Anything!", "score": 18, "comments": 30,
+     "sentiment": "neutral", "date": "2026-02-09T09:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_02"},
+    {"id": "iama_03", "subreddit": "r/IAmA", "title": "IamA former Rental Car Agent, your worst travel nightmare, in the industry for 10 years AMA!", "score": 30, "comments": 40,
+     "sentiment": "neutral", "date": "2026-02-08T07:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_03"},
+    {"id": "iama_04", "subreddit": "r/IAmA", "title": "AMA Request: An Avis Car rental 'Independent Operator.'", "score": 5, "comments": 10,
+     "sentiment": "neutral", "date": "2026-02-07T12:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_04"},
+    {"id": "iama_05", "subreddit": "r/IAmA", "title": "IamA Rental Car Agent (AKA the guy who tells you want you don't want to hear) AMA!", "score": 15, "comments": 20,
+     "sentiment": "neutral", "date": "2026-02-06T08:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_05"},
+    # r/unitedairlines
+    {"id": "united_01", "subreddit": "r/unitedairlines", "title": "$180 upcharge renting car through United vs. Avis directly?", "score": 22, "comments": 30,
+     "sentiment": "negative", "date": "2026-02-10T11:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_01"},
+    {"id": "united_02", "subreddit": "r/unitedairlines", "title": "Anyone use the United portal to book an Avis rental car?", "score": 12, "comments": 18,
+     "sentiment": "negative", "date": "2026-02-09T10:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_02"},
+    {"id": "united_03", "subreddit": "r/unitedairlines", "title": "Avis vs. Budget", "score": 16, "comments": 22,
+     "sentiment": "neutral", "date": "2026-02-08T09:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_03"},
+    {"id": "united_04", "subreddit": "r/unitedairlines", "title": "Booking Rental Car through United", "score": 10, "comments": 15,
+     "sentiment": "neutral", "date": "2026-02-07T08:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_04"},
+    {"id": "united_05", "subreddit": "r/unitedairlines", "title": "PQP with Avis?", "score": 8, "comments": 10,
+     "sentiment": "neutral", "date": "2026-02-06T07:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_05"},
+]
+
+
+def _filter_posts(brand: Optional[str] = None, subreddit: Optional[str] = None):
+    posts = REDDIT_POSTS
+    if brand:
+        posts = [p for p in posts if brand.lower() in p["title"].lower()]
+    if subreddit:
+        sub = subreddit if subreddit.startswith("r/") else f"r/{subreddit}"
+        posts = [p for p in posts if p["subreddit"].lower() == sub.lower()]
+    return posts
+
+
+@app.get("/api/reddit/stats")
+async def get_reddit_stats(brand: Optional[str] = None):
+    """Aggregated Reddit mention stats for a brand."""
+    if brand and brand.lower() == "avis":
+        return {
+            "total_mentions": 1247,
+            "positive_sentiment": 62,
+            "negative_sentiment": 23,
+            "neutral_sentiment": 15,
+            "trending_score": 8.4,
+            "top_subreddits": ["r/cars", "r/travel", "r/roadtrip", "r/carrental"],
+        }
+    # Fallback: compute from posts for other brands
+    posts = _filter_posts(brand)
+    total = max(len(posts), 1)
+    pos = sum(1 for p in posts if p["sentiment"] == "positive")
+    neg = sum(1 for p in posts if p["sentiment"] == "negative")
+    neu = sum(1 for p in posts if p["sentiment"] == "neutral")
+    total_score = sum(p["score"] for p in posts)
+    trending = round(total_score / max(total, 1), 1)
+    subs = list(dict.fromkeys(p["subreddit"] for p in posts))
+    return {
+        "total_mentions": len(posts),
+        "positive_sentiment": round(pos * 100 / total),
+        "negative_sentiment": round(neg * 100 / total),
+        "neutral_sentiment": round(neu * 100 / total),
+        "trending_score": trending,
+        "top_subreddits": subs,
+    }
+
+
+@app.get("/api/reddit/trends")
+async def get_reddit_trends(brand: Optional[str] = None, period: str = "week"):
+    """Mention and sentiment trends over time."""
+    if brand and brand.lower() == "avis":
+        return {
+            "trends": [
+                {"period": "Week 1", "mentions": 145, "sentiment": 65},
+                {"period": "Week 2", "mentions": 189, "sentiment": 58},
+                {"period": "Week 3", "mentions": 234, "sentiment": 72},
+            ]
+        }
+    # Fallback: compute from posts for other brands
+    posts = _filter_posts(brand)
+    posts_sorted = sorted(posts, key=lambda p: p["date"])
+    chunk = max(len(posts_sorted) // 3, 1)
+    buckets = [posts_sorted[i:i + chunk] for i in range(0, len(posts_sorted), chunk)]
+    if len(buckets) > 3:
+        buckets[2].extend(buckets[3])
+        buckets = buckets[:3]
+    trends = []
+    for idx, bucket in enumerate(buckets, 1):
+        mentions = len(bucket)
+        pos = sum(1 for p in bucket if p["sentiment"] == "positive")
+        sentiment = round(pos * 100 / max(mentions, 1))
+        trends.append({"period": f"Week {idx}", "mentions": mentions, "sentiment": sentiment})
+    return {"trends": trends}
+
+
+@app.get("/api/reddit/posts")
+async def get_reddit_posts(brand: Optional[str] = None, subreddit: Optional[str] = None):
+    """List Reddit posts, optionally filtered by brand and/or subreddit."""
+    return {"posts": _filter_posts(brand, subreddit)}
+
+
+@app.get("/api/reddit/sentiment")
+async def get_reddit_sentiment(brand: Optional[str] = None):
+    """Sentiment distribution for Reddit mentions."""
+    posts = _filter_posts(brand)
+    total = max(len(posts), 1)
+    pos = sum(1 for p in posts if p["sentiment"] == "positive")
+    neg = sum(1 for p in posts if p["sentiment"] == "negative")
+    neu = sum(1 for p in posts if p["sentiment"] == "neutral")
+    return {
+        "sentiment": [
+            {"name": "Positive", "value": round(pos * 100 / total)},
+            {"name": "Neutral", "value": round(neu * 100 / total)},
+            {"name": "Negative", "value": round(neg * 100 / total)},
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
