@@ -181,6 +181,36 @@ class Database:
                 )
                 session.add(db_enrichment)
 
+    def delete_enrichments(self, location_id: Optional[str] = None,
+                          source: Optional[str] = None,
+                          brand: Optional[str] = None,
+                          sentiment: Optional[str] = None) -> int:
+        """Delete enrichments matching the filters. Returns count of deleted records."""
+        with self.get_session() as session:
+            # Build subquery to find review_ids matching filters
+            review_query = session.query(Review.review_id)
+            
+            if location_id:
+                review_query = review_query.filter(Review.location_id == location_id)
+            if source:
+                review_query = review_query.filter(Review.source == source)
+            if brand:
+                review_query = review_query.filter(Review.brand == brand.lower())
+            
+            review_ids = [r.review_id for r in review_query.all()]
+            
+            if not review_ids:
+                return 0
+            
+            # Delete enrichments for matching reviews
+            query = session.query(Enrichment).filter(Enrichment.review_id.in_(review_ids))
+            
+            if sentiment:
+                query = query.filter(Enrichment.sentiment == sentiment)
+            
+            count = query.delete(synchronize_session=False)
+            return count
+
     def get_enriched_reviews_for_export(self, location_id: str, brand: str = None) -> List[Dict]:
         """Get all reviews with enrichment data for KB export, filtered by location and optionally brand."""
         with self.get_session() as session:

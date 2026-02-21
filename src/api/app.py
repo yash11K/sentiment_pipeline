@@ -1046,6 +1046,155 @@ async def get_ingestion_history(limit: int = Query(50, le=200)):
     return {"history": history, "count": len(history)}
 
 
+# ============ RE-ENRICHMENT APIs ============
+
+class ReEnrichRequest(BaseModel):
+    location_id: Optional[str] = None
+    source: Optional[str] = None
+    brand: Optional[str] = None
+    sentiment: Optional[str] = None  # e.g., "neutral" to only re-enrich neutrals
+    limit: int = 1000
+
+
+def run_reenrich_job(job_id: str, filters: dict, limit: int):
+    """Background task to re-enrich reviews"""
+    from ingestion.enricher import ReviewEnricher
+    
+    with jobs_lock:
+        ingestion_jobs[job_id]["status"] = "running"
+        ingestion_jobs[job_id]["started_at"] = datetime.now().isoformat()
+    
+    logger.start(f"[Job {job_id}] Starting re-enrichment...")
+    
+    try:
+        # Step 1: Delete existing enrichments matching filters
+        deleted_count = db.delete_enrichments(
+            location_id=filters.get('location_id'),
+            source=filters.get('source'),
+            brand=filters.get('brand'),
+            sentiment=filters.get('sentiment')
+        )
+        logger.info(f"[Job {job_id}] Deleted {deleted_count} existing enrichments")
+        
+        with jobs_lock:
+            ingestion_jobs[job_id]["deleted_count"] = deleted_count
+        
+        # Step 2: Get unenriched reviews (now includes the ones we just deleted)
+        reviews = db.get_reviews(
+            location_id=filters.get('location_id'),
+            brand=filters.get('brand'),
+            unenriched_only=True,
+            limit=limit
+        )
+        
+        # Filter by source if specified
+        if filters.get('source'):
+            reviews = [r for r in reviews if r.get('source') == filters['source']]
+        
+        logger.info(f"[Job {job_id}] Found {len(reviews)} reviews to re-enrich")
+        
+        with jobs_lock:
+            ingestion_jobs[job_id]["reviews_to_process"] = len(reviews)
+        
+        # Step 3: Re-enrich
+        enricher = ReviewEnricher(db)
+        enriched_count = 0
+        
+        for i in range(0, len(reviews), enricher.batch_size):
+            batch = reviews[i:i + enricher.batch_size]
+            try:
+                enrichments = enricher.enrich_batch(batch)
+                for enrichment in enrichments:
+                    db.insert_enrichment(enrichment)
+                    enriched_count += 1
+                
+                with jobs_lock:
+                    ingestion_jobs[job_id]["enriched_count"] = enriched_count
+                    
+            except Exception as e:
+                logger.error(f"[Job {job_id}] Batch error: {e}")
+        
+        with jobs_lock:
+            ingestion_jobs[job_id].update({
+                "status": "completed",
+                "completed_at": datetime.now().isoformat(),
+                "enriched_count": enriched_count,
+                "summary": {
+                    "deleted": deleted_count,
+                    "processed": len(reviews),
+                    "enriched": enriched_count
+                }
+            })
+        
+        logger.complete(f"[Job {job_id}] Re-enrichment completed: {enriched_count} reviews")
+        
+    except Exception as e:
+        logger.error(f"[Job {job_id}] Re-enrichment failed: {e}")
+        with jobs_lock:
+            ingestion_jobs[job_id].update({
+                "status": "failed",
+                "completed_at": datetime.now().isoformat(),
+                "error": str(e)
+            })
+
+
+@app.post("/api/ingestion/re-enrich")
+async def re_enrich_reviews(request: ReEnrichRequest, background_tasks: BackgroundTasks):
+    """
+    Re-enrich reviews with updated sentiment analysis.
+    
+    This will:
+    1. Delete existing enrichments matching the filters
+    2. Re-run LLM enrichment with the updated prompt
+    
+    Filters:
+    - location_id: Only re-enrich reviews from this location
+    - source: Only re-enrich reviews from this source (google, reddit, etc.)
+    - brand: Only re-enrich reviews for this brand
+    - sentiment: Only re-enrich reviews with this sentiment (e.g., "neutral")
+    - limit: Max reviews to process (default: 1000)
+    
+    Use sentiment="neutral" to specifically re-process reviews that were incorrectly classified as neutral.
+    """
+    job_id = str(uuid.uuid4())[:8]
+    
+    filters = {
+        "location_id": request.location_id,
+        "source": request.source,
+        "brand": request.brand,
+        "sentiment": request.sentiment
+    }
+    
+    with jobs_lock:
+        ingestion_jobs[job_id] = {
+            "job_id": job_id,
+            "type": "re-enrichment",
+            "status": "queued",
+            "filters": filters,
+            "limit": request.limit,
+            "created_at": datetime.now().isoformat(),
+            "started_at": None,
+            "completed_at": None,
+            "deleted_count": 0,
+            "reviews_to_process": 0,
+            "enriched_count": 0,
+            "error": None
+        }
+    
+    background_tasks.add_task(run_reenrich_job, job_id, filters, request.limit)
+    
+    filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items() if v)
+    logger.info(f"📋 Created re-enrichment job {job_id} ({filter_desc or 'all reviews'})")
+    
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": f"Re-enrichment job created. Use /api/ingestion/jobs/{job_id} to check status.",
+        "filters": filters,
+        "limit": request.limit
+    }
+
+
 @app.get("/api/ingestion/status/{s3_key:path}")
 async def get_ingestion_status(s3_key: str):
     """Get the ingestion status of a specific S3 file"""
