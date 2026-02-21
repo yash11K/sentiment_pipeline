@@ -205,7 +205,28 @@ Return ONLY a JSON array of entities, e.g., ["Preferred", "EZ Pass"]"""
       }}
     ]
 
-    Guidelines:
+    CRITICAL SENTIMENT RULES (follow strictly):
+    - sentiment MUST be exactly one of: "positive", "negative", or "neutral" (NO other values)
+    - DEFAULT TO NEGATIVE when in doubt - car rental reviews are typically complaints
+    - Star rating is the PRIMARY signal:
+      * 1-2 stars = ALWAYS "negative" (no exceptions)
+      * 3 stars = "negative" unless content is clearly praising the service
+      * 4 stars = "positive" unless there are specific complaints mentioned
+      * 5 stars = "positive"
+    - Content analysis (secondary):
+      * ANY complaint, issue, problem, or frustration = lean toward "negative"
+      * Words like "but", "however", "although" followed by issues = "negative"
+      * If review mentions ANY negative experience, even with positives, classify as "negative"
+      * Only classify as "positive" if the review is genuinely praising without complaints
+    - "neutral" should be RARE:
+      * Only use for purely factual statements with no opinion
+      * Never use "neutral" for 1-3 star reviews
+      * Never use "neutral" if ANY complaint is mentioned
+    - sentiment_score: -1.0 to 1.0
+      * 1-2 stars: -0.5 to -1.0
+      * 3 stars: -0.3 to -0.6 (lean negative)
+      * 4 stars: 0.3 to 0.6
+      * 5 stars: 0.6 to 1.0
     - urgency_level: critical=safety/legal issues, high=service failures affecting many, medium=individual complaints, low=minor feedback
     - actionable: true if the review suggests a specific improvement opportunity
     - key_phrases: 1-3 short phrases (max 8 words each) capturing the essence

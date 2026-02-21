@@ -321,7 +321,9 @@ async def get_topic_analysis(location_id: Optional[str] = None, brand: Optional[
                         }
                     topic_stats[topic]["count"] += 1
                     topic_stats[topic]["ratings"].append(row.rating)
-                    topic_stats[topic][row.sentiment] += 1
+                    # Handle unexpected sentiment values (e.g., "mixed")
+                    sentiment = row.sentiment if row.sentiment in ("positive", "negative", "neutral") else "neutral"
+                    topic_stats[topic][sentiment] += 1
     
     # Calculate averages and format response
     result = []
