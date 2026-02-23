@@ -37,7 +37,7 @@ app.add_middleware(
 
 db = Database()
 insights_gen = InsightGenerator(db)
-chat_engine = ChatEngine(db)
+chat_engine = ChatEngine()
 filter_engine = FilterEngine(db)
 
 # In-memory job tracking for background ingestion tasks
@@ -48,8 +48,6 @@ logger.api("Review Intelligence API initialized")
 
 class ChatRequest(BaseModel):
     query: str
-    location_id: Optional[str] = None
-    use_semantic: bool = True
 
 @app.get("/")
 async def home():
@@ -108,7 +106,7 @@ async def get_insights(location_id: str, regenerate: bool = False):
 async def chat(request: ChatRequest):
     try:
         logger.chat(f"Chat query: {request.query[:50]}...")
-        response = chat_engine.chat(request.query, request.location_id, request.use_semantic)
+        response = chat_engine.chat(request.query)
         logger.success("Chat response generated")
         return response
     except Exception as e:
@@ -474,130 +472,147 @@ async def get_recent_reviews(location_id: Optional[str] = None, limit: int = 10)
     return {"reviews": reviews}
 
 
-# Predefined queries for highlight detection
-HIGHLIGHT_QUERIES = [
-    {"query": "long wait times delays queue complaints", "topic": "wait_times", "label": "Wait Times"},
-    {"query": "rude staff unhelpful bad customer service", "topic": "staff_behavior", "label": "Staff Behavior"},
-    {"query": "dirty car vehicle condition mechanical issues", "topic": "vehicle_condition", "label": "Vehicle Condition"},
-    {"query": "hidden fees overcharges unexpected billing costs", "topic": "pricing_fees", "label": "Pricing & Fees"},
-    {"query": "reservation not honored booking cancelled", "topic": "reservation_issues", "label": "Reservation Issues"},
-    {"query": "cleanliness dirty smell unclean", "topic": "cleanliness", "label": "Cleanliness"},
-]
+HIGHLIGHT_PROMPT_TEMPLATE = """Analyze customer reviews for the {brand_context}{location_context} car rental location and identify the most critical problems that need immediate attention.
+
+Organize your response by severity. Be specific — reference patterns from actual customer complaints. Focus on actionable issues that management can address.
+
+After your analysis, do the following:
+1. Classify the overall severity as exactly one of: critical, warning, or info.
+   - critical: widespread systemic failures affecting most customers (e.g., multi-hour waits, consistent staff hostility, reservation system breakdowns)
+   - warning: recurring issues impacting a significant portion of customers but not universal
+   - info: isolated or minor complaints without a clear pattern
+2. Suggest exactly 3 followup questions a location manager would want to ask next to dig deeper into these problems.
+
+Return your response in this exact format:
+
+ANALYSIS:
+<your detailed analysis here>
+
+SEVERITY: <critical|warning|info>
+
+FOLLOWUP_QUESTIONS:
+1. <question 1>
+2. <question 2>
+3. <question 3>"""
+
+
+def _parse_highlight_response(raw_response: str) -> Dict:
+    """Parse the structured KB response into analysis, severity, and followup questions."""
+    analysis = ""
+    severity = "info"
+    followup_questions = []
+
+    # Extract analysis section
+    if "ANALYSIS:" in raw_response:
+        parts = raw_response.split("SEVERITY:")
+        analysis = parts[0].replace("ANALYSIS:", "").strip()
+    else:
+        analysis = raw_response.strip()
+
+    # Extract severity
+    if "SEVERITY:" in raw_response:
+        sev_section = raw_response.split("SEVERITY:")[1]
+        sev_line = sev_section.strip().split("\n")[0].strip().lower()
+        if sev_line in ("critical", "warning", "info"):
+            severity = sev_line
+
+    # Extract followup questions
+    if "FOLLOWUP_QUESTIONS:" in raw_response:
+        fq_section = raw_response.split("FOLLOWUP_QUESTIONS:")[1].strip()
+        for line in fq_section.strip().split("\n"):
+            line = line.strip()
+            if line and line[0].isdigit() and "." in line:
+                question = line.split(".", 1)[1].strip()
+                if question:
+                    followup_questions.append(question)
+
+    if not followup_questions:
+        followup_questions = [
+            "What are the most common complaints at this location?",
+            "How does this location compare to competitors?",
+            "What has changed at this location over the last 30 days?"
+        ]
+
+    return {
+        "analysis": analysis,
+        "severity": severity,
+        "followup_questions": followup_questions[:3]
+    }
 
 
 @app.get("/api/dashboard/highlight")
-async def get_highlight(location_id: Optional[str] = None, brand: Optional[str] = None):
-    """Get the most critical complaint highlight for the dashboard alert"""
-    from utils.bedrock import BedrockClient
-    from sqlalchemy import text
-    
-    bedrock = BedrockClient()
-    
-    # Gather complaint stats for each topic
-    extra_filters = ""
-    base_params = {}
-    if location_id:
-        extra_filters += " AND r.location_id = :loc"
-        base_params["loc"] = location_id
-    if brand:
-        extra_filters += " AND r.brand = :brand"
-        base_params["brand"] = brand
-    
-    topic_complaints = []
-    
-    with db.get_session() as session:
-        for hq in HIGHLIGHT_QUERIES:
-            topic = hq["topic"]
-            params = {"topic_pattern": f'%"{topic}"%', **base_params}
-            
-            # Count negative reviews for this topic
-            result = session.execute(text(f"""
-                SELECT COUNT(*) as count, AVG(e.sentiment_score) as avg_score
-                FROM reviews r
-                JOIN enrichments e ON r.review_id = e.review_id
-                WHERE e.sentiment = 'negative'
-                AND e.topics LIKE :topic_pattern
-                {extra_filters}
-            """), params)
-            
-            row = result.fetchone()
-            if row and row.count > 0:
-                topic_complaints.append({
-                    "topic": topic,
-                    "label": hq["label"],
-                    "query": hq["query"],
-                    "count": row.count,
-                    "avg_score": row.avg_score or 0
-                })
-        
-        # No complaints found
-        if not topic_complaints:
-            return {"highlight": None, "generated_at": datetime.now().isoformat()}
-        
-        # Sort by count * severity (more negative score = higher priority)
-        topic_complaints.sort(key=lambda x: x['count'] * abs(x['avg_score']), reverse=True)
-        top_complaint = topic_complaints[0]
-        
-        # Get a sample review for this topic
-        params = {"topic_pattern": f'%"{top_complaint["topic"]}"%', **base_params}
-        result = session.execute(text(f"""
-            SELECT r.review_text, r.rating, e.sentiment_score
-            FROM reviews r
-            JOIN enrichments e ON r.review_id = e.review_id
-            WHERE e.sentiment = 'negative'
-            AND e.topics LIKE :topic_pattern
-            {extra_filters}
-            ORDER BY e.sentiment_score ASC
-            LIMIT 1
-        """), params)
-        
-        sample_row = result.fetchone()
-    
-    sample_quote = ""
-    sample_rating = None
-    if sample_row:
-        sample_quote = sample_row.review_text
-        sample_rating = sample_row.rating
-    
-    # Determine severity
-    count = top_complaint['count']
-    avg_score = top_complaint['avg_score']
-    if count >= 10 or avg_score < -0.7:
-        severity = "high"
-    elif count >= 5 or avg_score < -0.5:
-        severity = "medium"
-    else:
-        severity = "low"
-    
-    # Generate dynamic headline using LLM
-    headline_prompt = f"""Generate a short, urgent alert headline (max 10 words) for a car rental dashboard.
-Topic: {top_complaint['label']}
-Complaint count: {count}
-Sample complaint: {sample_quote}
+async def get_highlight(
+    location_id: Optional[str] = None,
+    brand: Optional[str] = None,
+    refresh: bool = False
+):
+    """Get a KB-powered problem briefing for the dashboard highlight.
 
-Return ONLY the headline text, no quotes or explanation. Make it actionable and specific."""
+    Query params:
+        location_id: IATA airport code (e.g. JFK, LAX)
+        brand: brand name filter (e.g. avis, hertz)
+        refresh: if true, bypass cache and regenerate from KB
+    """
+    if not location_id:
+        return {"highlight": None, "generated_at": datetime.now().isoformat()}
 
-    headline = bedrock.invoke(headline_prompt, max_tokens=50, temperature=0.7).strip().strip('"')
-    
-    # Fallback headline if LLM fails
-    if not headline:
-        headline = f"{top_complaint['label']} issues need attention"
-    
-    location_context = f" at {location_id}" if location_id else ""
-    analysis_query = f"Show me all complaints about {top_complaint['label'].lower()}{location_context}"
-    
+    # Check cache unless refresh requested
+    if not refresh:
+        cached = db.get_cached_highlight(location_id, brand)
+        if cached:
+            return {
+                "highlight": {
+                    "location_id": cached["location_id"],
+                    "brand": cached["brand"],
+                    "analysis": cached["analysis"],
+                    "severity": cached["severity"],
+                    "followup_questions": cached["followup_questions"],
+                    "citations": cached["citations"],
+                },
+                "cached": True,
+                "generated_at": cached["created_at"]
+            }
+
+    # Build the prompt
+    location_context = f"{location_id} airport"
+    brand_context = f"{brand}" if brand else "all brands at"
+    prompt = HIGHLIGHT_PROMPT_TEMPLATE.format(
+        location_context=location_context,
+        brand_context=brand_context
+    )
+
+    # Call KB retrieve-and-generate
+    try:
+        result = chat_engine.chat(prompt)
+    except Exception as e:
+        logger.error(f"Highlight KB call failed: {e}")
+        raise HTTPException(status_code=502, detail="Failed to generate highlight from Knowledge Base")
+
+    raw_answer = result.get("answer", "")
+    citations = result.get("citations", [])
+
+    parsed = _parse_highlight_response(raw_answer)
+
+    # Cache the result
+    db.save_highlight(
+        location_id=location_id,
+        brand=brand,
+        analysis=parsed["analysis"],
+        severity=parsed["severity"],
+        followup_questions=parsed["followup_questions"],
+        citations=citations
+    )
+
     return {
         "highlight": {
-            "headline": headline,
-            "description": f"{count} complaints identified",
-            "severity": severity,
-            "topic": top_complaint['topic'],
-            "topic_label": top_complaint['label'],
-            "complaint_count": count,
-            "sample_quote": sample_quote,
-            "sample_rating": sample_rating,
-            "analysis_query": analysis_query
+            "location_id": location_id,
+            "brand": brand,
+            "analysis": parsed["analysis"],
+            "severity": parsed["severity"],
+            "followup_questions": parsed["followup_questions"],
+            "citations": citations,
         },
+        "cached": False,
         "generated_at": datetime.now().isoformat()
     }
 
@@ -1213,75 +1228,99 @@ async def get_ingestion_status(s3_key: str):
 REDDIT_POSTS = [
     # r/travel
     {"id": "travel_01", "subreddit": "r/travel", "title": "Avis car rental question", "score": 12, "comments": 15,
-     "sentiment": "neutral", "date": "2026-02-10T08:00:00Z", "url": "https://reddit.com/r/travel/comments/travel_01"},
+     "sentiment": "neutral", "date": "2026-02-10T08:00:00Z"},
     {"id": "travel_02", "subreddit": "r/travel", "title": "Hertz Vs Avis car rental", "score": 7, "comments": 10,
-     "sentiment": "negative", "date": "2026-02-09T14:20:00Z", "url": "https://reddit.com/r/travel/comments/travel_02"},
+     "sentiment": "negative", "date": "2026-02-09T14:20:00Z"},
     {"id": "travel_03", "subreddit": "r/travel", "title": "Avis Rental car from US drive to Canada", "score": 5, "comments": 8,
-     "sentiment": "neutral", "date": "2026-02-08T11:00:00Z", "url": "https://reddit.com/r/travel/comments/travel_03"},
+     "sentiment": "neutral", "date": "2026-02-08T11:00:00Z"},
     {"id": "travel_04", "subreddit": "r/travel", "title": "Avis Car Rental Advisory", "score": 9, "comments": 12,
-     "sentiment": "positive", "date": "2026-02-07T09:30:00Z", "url": "https://reddit.com/r/travel/comments/travel_04"},
+     "sentiment": "positive", "date": "2026-02-07T09:30:00Z"},
     {"id": "travel_05", "subreddit": "r/travel", "title": "Avis Car Rental", "score": 11, "comments": 6,
-     "sentiment": "negative", "date": "2026-02-06T16:45:00Z", "url": "https://reddit.com/r/travel/comments/travel_05"},
+     "sentiment": "negative", "date": "2026-02-06T16:45:00Z"},
     # r/TravelHacks
     {"id": "thacks_01", "subreddit": "r/TravelHacks", "title": "First time car hire with Avis (USA - West Coast) - what pitfalls should I avoid?", "score": 15, "comments": 20,
-     "sentiment": "neutral", "date": "2026-02-10T07:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_01"},
+     "sentiment": "neutral", "date": "2026-02-10T07:00:00Z"},
     {"id": "thacks_02", "subreddit": "r/TravelHacks", "title": "AVIS reputation", "score": 25, "comments": 30,
-     "sentiment": "negative", "date": "2026-02-09T12:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_02"},
+     "sentiment": "negative", "date": "2026-02-09T12:00:00Z"},
     {"id": "thacks_03", "subreddit": "r/TravelHacks", "title": "Why is AVIS so bad as of recent? Any reputable car companies to change to?", "score": 10, "comments": 15,
-     "sentiment": "negative", "date": "2026-02-08T10:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_03"},
+     "sentiment": "negative", "date": "2026-02-08T10:00:00Z"},
     {"id": "thacks_04", "subreddit": "r/TravelHacks", "title": "Avis Car Rental Early Return?", "score": 8, "comments": 10,
-     "sentiment": "neutral", "date": "2026-02-07T15:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_04"},
+     "sentiment": "neutral", "date": "2026-02-07T15:00:00Z"},
     {"id": "thacks_05", "subreddit": "r/TravelHacks", "title": "Is Avis Mystery Car worth it?", "score": 6, "comments": 5,
-     "sentiment": "neutral", "date": "2026-02-06T09:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_05"},
+     "sentiment": "neutral", "date": "2026-02-06T09:00:00Z"},
     {"id": "thacks_06", "subreddit": "r/TravelHacks", "title": "Avis/Budget claiming damage on a rental I returned 7 months ago.", "score": 11, "comments": 20,
-     "sentiment": "negative", "date": "2026-02-05T13:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_06"},
+     "sentiment": "negative", "date": "2026-02-05T13:00:00Z"},
     {"id": "thacks_07", "subreddit": "r/TravelHacks", "title": "If you are under 25, DO NOT RENT WITH AVIS", "score": 18, "comments": 25,
-     "sentiment": "negative", "date": "2026-02-04T11:00:00Z", "url": "https://reddit.com/r/TravelHacks/comments/thacks_07"},
+     "sentiment": "negative", "date": "2026-02-04T11:00:00Z"},
     # r/Scams
     {"id": "scams_01", "subreddit": "r/Scams", "title": "Did AVIS Rent-a-Car try to pull a scam?", "score": 14, "comments": 22,
-     "sentiment": "negative", "date": "2026-02-10T06:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_01"},
+     "sentiment": "negative", "date": "2026-02-10T06:00:00Z"},
     {"id": "scams_02", "subreddit": "r/Scams", "title": "Dubai car rental scams.", "score": 10, "comments": 14,
-     "sentiment": "negative", "date": "2026-02-09T08:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_02"},
+     "sentiment": "negative", "date": "2026-02-09T08:00:00Z"},
     {"id": "scams_03", "subreddit": "r/Scams", "title": "Is this Italy traffic fine scam from Avis Rental Car?", "score": 12, "comments": 18,
-     "sentiment": "negative", "date": "2026-02-08T14:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_03"},
+     "sentiment": "negative", "date": "2026-02-08T14:00:00Z"},
     {"id": "scams_04", "subreddit": "r/Scams", "title": "Miami Car Rental Scam", "score": 9, "comments": 11,
-     "sentiment": "negative", "date": "2026-02-07T10:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_04"},
+     "sentiment": "negative", "date": "2026-02-07T10:00:00Z"},
     {"id": "scams_05", "subreddit": "r/Scams", "title": "Warning: www.rentcars.com is a SCAM", "score": 16, "comments": 24,
-     "sentiment": "negative", "date": "2026-02-06T12:00:00Z", "url": "https://reddit.com/r/Scams/comments/scams_05"},
+     "sentiment": "negative", "date": "2026-02-06T12:00:00Z"},
     # r/cars
     {"id": "cars_01", "subreddit": "r/cars", "title": "Avis Car Rental: What is similar to a Mustang?", "score": 10, "comments": 15,
-     "sentiment": "neutral", "date": "2026-02-10T09:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_01"},
+     "sentiment": "neutral", "date": "2026-02-10T09:00:00Z"},
     {"id": "cars_02", "subreddit": "r/cars", "title": "As a car guy, I get infuriated with the crappy cars Avis gives me when I go on work travel.", "score": 20, "comments": 30,
-     "sentiment": "negative", "date": "2026-02-09T11:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_02"},
+     "sentiment": "negative", "date": "2026-02-09T11:00:00Z"},
     {"id": "cars_03", "subreddit": "r/cars", "title": "This is why you get the damage waiver on your rental car.", "score": 15, "comments": 10,
-     "sentiment": "negative", "date": "2026-02-08T08:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_03"},
+     "sentiment": "negative", "date": "2026-02-08T08:00:00Z"},
     {"id": "cars_04", "subreddit": "r/cars", "title": "Which Rental Car Was Either Much Better or Much Worse than You Expected?", "score": 12, "comments": 20,
-     "sentiment": "neutral", "date": "2026-02-07T14:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_04"},
+     "sentiment": "neutral", "date": "2026-02-07T14:00:00Z"},
     {"id": "cars_05", "subreddit": "r/cars", "title": "Anyone else notice, rental car companies are keeping cars longer?", "score": 10, "comments": 10,
-     "sentiment": "negative", "date": "2026-02-06T10:00:00Z", "url": "https://reddit.com/r/cars/comments/cars_05"},
+     "sentiment": "negative", "date": "2026-02-06T10:00:00Z"},
     # r/IAmA
     {"id": "iama_01", "subreddit": "r/IAmA", "title": "IamA Rental Car Agent for Avis-Budget Group. AMA!", "score": 25, "comments": 50,
-     "sentiment": "neutral", "date": "2026-02-10T10:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_01"},
+     "sentiment": "neutral", "date": "2026-02-10T10:00:00Z"},
     {"id": "iama_02", "subreddit": "r/IAmA", "title": "I own and manage an AVIS/BUDGET Car and Truck Rental store for the last 3 years! Ask Me Anything!", "score": 18, "comments": 30,
-     "sentiment": "neutral", "date": "2026-02-09T09:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_02"},
+     "sentiment": "neutral", "date": "2026-02-09T09:00:00Z"},
     {"id": "iama_03", "subreddit": "r/IAmA", "title": "IamA former Rental Car Agent, your worst travel nightmare, in the industry for 10 years AMA!", "score": 30, "comments": 40,
-     "sentiment": "neutral", "date": "2026-02-08T07:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_03"},
+     "sentiment": "neutral", "date": "2026-02-08T07:00:00Z"},
     {"id": "iama_04", "subreddit": "r/IAmA", "title": "AMA Request: An Avis Car rental 'Independent Operator.'", "score": 5, "comments": 10,
-     "sentiment": "neutral", "date": "2026-02-07T12:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_04"},
+     "sentiment": "neutral", "date": "2026-02-07T12:00:00Z"},
     {"id": "iama_05", "subreddit": "r/IAmA", "title": "IamA Rental Car Agent (AKA the guy who tells you want you don't want to hear) AMA!", "score": 15, "comments": 20,
-     "sentiment": "neutral", "date": "2026-02-06T08:00:00Z", "url": "https://reddit.com/r/IAmA/comments/iama_05"},
+     "sentiment": "neutral", "date": "2026-02-06T08:00:00Z"},
     # r/unitedairlines
     {"id": "united_01", "subreddit": "r/unitedairlines", "title": "$180 upcharge renting car through United vs. Avis directly?", "score": 22, "comments": 30,
-     "sentiment": "negative", "date": "2026-02-10T11:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_01"},
+     "sentiment": "negative", "date": "2026-02-10T11:00:00Z"},
     {"id": "united_02", "subreddit": "r/unitedairlines", "title": "Anyone use the United portal to book an Avis rental car?", "score": 12, "comments": 18,
-     "sentiment": "negative", "date": "2026-02-09T10:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_02"},
+     "sentiment": "negative", "date": "2026-02-09T10:00:00Z"},
     {"id": "united_03", "subreddit": "r/unitedairlines", "title": "Avis vs. Budget", "score": 16, "comments": 22,
-     "sentiment": "neutral", "date": "2026-02-08T09:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_03"},
+     "sentiment": "neutral", "date": "2026-02-08T09:00:00Z"},
     {"id": "united_04", "subreddit": "r/unitedairlines", "title": "Booking Rental Car through United", "score": 10, "comments": 15,
-     "sentiment": "neutral", "date": "2026-02-07T08:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_04"},
+     "sentiment": "neutral", "date": "2026-02-07T08:00:00Z"},
     {"id": "united_05", "subreddit": "r/unitedairlines", "title": "PQP with Avis?", "score": 8, "comments": 10,
-     "sentiment": "neutral", "date": "2026-02-06T07:00:00Z", "url": "https://reddit.com/r/unitedairlines/comments/united_05"},
+     "sentiment": "neutral", "date": "2026-02-06T07:00:00Z"},
 ]
+
+# Topic classification keywords for Reddit posts
+REDDIT_TOPIC_KEYWORDS = {
+    "Pricing & Charges": ["upcharge", "price", "pricing", "charge", "cost", "fee", "expensive", "$", "overcharge"],
+    "Damage Claims": ["damage", "waiver", "claiming damage", "damage waiver"],
+    "Scams & Fraud": ["scam", "fraud", "warning", "fine"],
+    "Vehicle Quality": ["crappy", "car quality", "mustang", "mystery car", "better or much worse", "keeping cars longer"],
+    "Customer Service": ["reputation", "bad", "nightmare", "pitfall", "advisory", "do not rent"],
+    "Booking & Reservations": ["book", "booking", "portal", "early return", "return"],
+    "Brand Comparison": ["vs", "hertz", "budget", "compare", "change to"],
+    "Cross-Border Rental": ["canada", "dubai", "italy", "international", "drive to"],
+    "Loyalty & Rewards": ["pqp", "points", "reward", "loyalty"],
+    "Industry Insider": ["agent", "ama", "operator", "manage", "own and manage"],
+}
+
+
+def _classify_post_topics(title: str) -> list:
+    """Classify a post into topics based on title keywords."""
+    title_lower = title.lower()
+    matched = []
+    for topic, keywords in REDDIT_TOPIC_KEYWORDS.items():
+        if any(kw in title_lower for kw in keywords):
+            matched.append(topic)
+    return matched if matched else ["General Discussion"]
 
 
 def _filter_posts(brand: Optional[str] = None, subreddit: Optional[str] = None):
@@ -1294,19 +1333,10 @@ def _filter_posts(brand: Optional[str] = None, subreddit: Optional[str] = None):
     return posts
 
 
+
 @app.get("/api/reddit/stats")
 async def get_reddit_stats(brand: Optional[str] = None):
     """Aggregated Reddit mention stats for a brand."""
-    if brand and brand.lower() == "avis":
-        return {
-            "total_mentions": 1247,
-            "positive_sentiment": 62,
-            "negative_sentiment": 23,
-            "neutral_sentiment": 15,
-            "trending_score": 8.4,
-            "top_subreddits": ["r/cars", "r/travel", "r/roadtrip", "r/carrental"],
-        }
-    # Fallback: compute from posts for other brands
     posts = _filter_posts(brand)
     total = max(len(posts), 1)
     pos = sum(1 for p in posts if p["sentiment"] == "positive")
@@ -1325,32 +1355,38 @@ async def get_reddit_stats(brand: Optional[str] = None):
     }
 
 
-@app.get("/api/reddit/trends")
-async def get_reddit_trends(brand: Optional[str] = None, period: str = "week"):
-    """Mention and sentiment trends over time."""
-    if brand and brand.lower() == "avis":
-        return {
-            "trends": [
-                {"period": "Week 1", "mentions": 145, "sentiment": 65},
-                {"period": "Week 2", "mentions": 189, "sentiment": 58},
-                {"period": "Week 3", "mentions": 234, "sentiment": 72},
-            ]
-        }
-    # Fallback: compute from posts for other brands
+
+
+@app.get("/api/reddit/topic-distribution")
+async def get_reddit_topic_distribution(brand: Optional[str] = None):
+    """Topic-wise distribution of Reddit posts with sentiment breakdown."""
     posts = _filter_posts(brand)
-    posts_sorted = sorted(posts, key=lambda p: p["date"])
-    chunk = max(len(posts_sorted) // 3, 1)
-    buckets = [posts_sorted[i:i + chunk] for i in range(0, len(posts_sorted), chunk)]
-    if len(buckets) > 3:
-        buckets[2].extend(buckets[3])
-        buckets = buckets[:3]
-    trends = []
-    for idx, bucket in enumerate(buckets, 1):
-        mentions = len(bucket)
-        pos = sum(1 for p in bucket if p["sentiment"] == "positive")
-        sentiment = round(pos * 100 / max(mentions, 1))
-        trends.append({"period": f"Week {idx}", "mentions": mentions, "sentiment": sentiment})
-    return {"trends": trends}
+    topic_stats = {}
+    for post in posts:
+        topics = _classify_post_topics(post["title"])
+        for topic in topics:
+            if topic not in topic_stats:
+                topic_stats[topic] = {"count": 0, "positive": 0, "negative": 0, "neutral": 0, "total_score": 0}
+            topic_stats[topic]["count"] += 1
+            sentiment = post["sentiment"] if post["sentiment"] in ("positive", "negative", "neutral") else "neutral"
+            topic_stats[topic][sentiment] += 1
+            topic_stats[topic]["total_score"] += post["score"]
+
+    topics = []
+    for topic, stats in topic_stats.items():
+        total = max(stats["count"], 1)
+        topics.append({
+            "topic": topic,
+            "count": stats["count"],
+            "avg_score": round(stats["total_score"] / total, 1),
+            "sentiment_split": {
+                "positive": stats["positive"],
+                "negative": stats["negative"],
+                "neutral": stats["neutral"],
+            },
+        })
+    topics.sort(key=lambda x: x["count"], reverse=True)
+    return {"topics": topics}
 
 
 @app.get("/api/reddit/posts")

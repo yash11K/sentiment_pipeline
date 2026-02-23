@@ -14,11 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Ensure data directories exist (data folder is copied with COPY . .)
+# Ensure data directories exist
 RUN mkdir -p data/raw data/processed
 
 # Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["python", "-m", "uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run migrations then start the app
+CMD ["sh", "-c", "alembic upgrade head && python -m uvicorn src.api.app:app --host 0.0.0.0 --port 8000"]

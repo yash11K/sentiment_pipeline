@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
       - APP_ENV=${APP_ENV:-dev}
