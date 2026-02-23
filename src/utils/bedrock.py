@@ -207,6 +207,65 @@ class BedrockClient:
             logger.error(f"Error in retrieve_and_generate: {e}")
             raise
 
+    def retrieve_and_generate_stream(self, query: str):
+        """Use Bedrock KB RetrieveAndGenerateStream API — streaming variant.
+
+        Yields dicts with keys:
+            - {"type": "chunk", "text": "..."}   for text fragments
+            - {"type": "citation", "citations": [...]}  when citations arrive
+            - {"type": "done"}  when the stream ends
+        """
+        if not self.kb_id:
+            raise ValueError("BEDROCK_KB_ID environment variable not set")
+
+        if self.model_id.split('.')[0] in ('us', 'eu', 'ap', 'global'):
+            import boto3 as _boto3
+            account_id = _boto3.client('sts', region_name=self.region).get_caller_identity()['Account']
+            model_arn = f"arn:aws:bedrock:{self.region}:{account_id}:inference-profile/{self.model_id}"
+        else:
+            model_arn = f"arn:aws:bedrock:{self.region}::foundation-model/{self.model_id}"
+
+        try:
+            response = self.agent_client.retrieve_and_generate_stream(
+                input={'text': query},
+                retrieveAndGenerateConfiguration={
+                    'type': 'KNOWLEDGE_BASE',
+                    'knowledgeBaseConfiguration': {
+                        'knowledgeBaseId': self.kb_id,
+                        'modelArn': model_arn,
+                        'retrievalConfiguration': {
+                            'vectorSearchConfiguration': {
+                                'numberOfResults': 100
+                            }
+                        }
+                    }
+                }
+            )
+
+            event_stream = response.get('stream', [])
+            for event in event_stream:
+                if 'output' in event:
+                    text = event['output'].get('text', '')
+                    if text:
+                        yield {"type": "chunk", "text": text}
+                elif 'citation' in event:
+                    citation_data = event['citation']
+                    citations = []
+                    for ref in citation_data.get('retrievedReferences', []):
+                        citations.append({
+                            'text': ref.get('content', {}).get('text', ''),
+                            'location': ref.get('location', {}),
+                            'metadata': ref.get('metadata', {})
+                        })
+                    if citations:
+                        yield {"type": "citation", "citations": citations}
+
+            yield {"type": "done"}
+
+        except Exception as e:
+            logger.error(f"Error in retrieve_and_generate_stream: {e}")
+            raise
+
     def invoke(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.7,
                return_raw: bool = False):
         """Invoke Bedrock model with a prompt

@@ -16,3 +16,10 @@ class ChatEngine:
         result = self.bedrock.retrieve_and_generate(query)
         logger.success("Response generated")
         return result
+
+    def chat_stream(self, query: str):
+        """Streaming variant — yields event dicts from the KB stream."""
+        logger.chat(f"Processing streaming query: {query[:50]}...")
+        logger.llm("Using RetrieveAndGenerateStream via Knowledge Base")
+        yield from self.bedrock.retrieve_and_generate_stream(query)
+        logger.success("Stream completed")

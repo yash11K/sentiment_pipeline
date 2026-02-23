@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
@@ -472,51 +473,44 @@ async def get_recent_reviews(location_id: Optional[str] = None, limit: int = 10)
     return {"reviews": reviews}
 
 
-HIGHLIGHT_PROMPT_TEMPLATE = """Analyze customer reviews for the {brand_context}{location_context} car rental location and identify the most critical problems that need immediate attention.
+HIGHLIGHT_PROMPT_TEMPLATE = """What are the most critical problems at the {brand_context} {location_context} car rental location that need immediate attention? Analyze customer reviews and identify the key issues organized by severity. Be specific and reference patterns from actual customer complaints. Focus on actionable issues that management can address."""
 
-Organize your response by severity. Be specific — reference patterns from actual customer complaints. Focus on actionable issues that management can address.
 
-After your analysis, do the following:
-1. Classify the overall severity as exactly one of: critical, warning, or info.
-   - critical: widespread systemic failures affecting most customers (e.g., multi-hour waits, consistent staff hostility, reservation system breakdowns)
+HIGHLIGHT_EXTRACTION_PROMPT = """Based on the following analysis of customer reviews, extract two things:
+
+1. An overall severity classification — exactly one of: critical, warning, or info.
+   - critical: widespread systemic failures affecting most customers
    - warning: recurring issues impacting a significant portion of customers but not universal
    - info: isolated or minor complaints without a clear pattern
-2. Suggest exactly 3 followup questions a location manager would want to ask next to dig deeper into these problems.
 
-Return your response in this exact format:
+2. Exactly 3 followup questions a location manager would want to ask to dig deeper.
 
-ANALYSIS:
-<your detailed analysis here>
+Return your response in this exact format and nothing else:
 
 SEVERITY: <critical|warning|info>
 
 FOLLOWUP_QUESTIONS:
-1. <question 1>
-2. <question 2>
-3. <question 3>"""
+1. <question>
+2. <question>
+3. <question>
+
+Here is the analysis:
+{analysis}"""
 
 
 def _parse_highlight_response(raw_response: str) -> Dict:
     """Parse the structured KB response into analysis, severity, and followup questions."""
-    analysis = ""
+    analysis = raw_response.strip()
     severity = "info"
     followup_questions = []
 
-    # Extract analysis section
-    if "ANALYSIS:" in raw_response:
-        parts = raw_response.split("SEVERITY:")
-        analysis = parts[0].replace("ANALYSIS:", "").strip()
-    else:
-        analysis = raw_response.strip()
-
-    # Extract severity
+    # If the KB response accidentally includes our structured markers, extract them
     if "SEVERITY:" in raw_response:
         sev_section = raw_response.split("SEVERITY:")[1]
         sev_line = sev_section.strip().split("\n")[0].strip().lower()
         if sev_line in ("critical", "warning", "info"):
             severity = sev_line
 
-    # Extract followup questions
     if "FOLLOWUP_QUESTIONS:" in raw_response:
         fq_section = raw_response.split("FOLLOWUP_QUESTIONS:")[1].strip()
         for line in fq_section.strip().split("\n"):
@@ -591,7 +585,19 @@ async def get_highlight(
     raw_answer = result.get("answer", "")
     citations = result.get("citations", [])
 
-    parsed = _parse_highlight_response(raw_answer)
+    analysis = raw_answer.strip()
+
+    # Step 2: Extract severity and followup questions via a separate LLM call
+    from utils.bedrock import BedrockClient
+    bedrock = BedrockClient()
+    try:
+        extraction_prompt = HIGHLIGHT_EXTRACTION_PROMPT.format(analysis=analysis)
+        extraction_response = bedrock.invoke(extraction_prompt, max_tokens=300, temperature=0.3)
+        parsed = _parse_highlight_response(extraction_response)
+        parsed["analysis"] = analysis
+    except Exception as e:
+        logger.error(f"Highlight extraction failed, using defaults: {e}")
+        parsed = _parse_highlight_response(analysis)
 
     # Cache the result
     db.save_highlight(
@@ -615,6 +621,88 @@ async def get_highlight(
         "cached": False,
         "generated_at": datetime.now().isoformat()
     }
+
+
+@app.get("/api/dashboard/highlight/stream")
+async def stream_highlight(
+    location_id: Optional[str] = None,
+    brand: Optional[str] = None
+):
+    """Stream a highlight briefing via Server-Sent Events.
+
+    Use this for the refresh UX — text chunks arrive as they're generated
+    by the KB, then a final event delivers the parsed metadata (severity,
+    followup questions) and caches the result.
+
+    SSE event types:
+        - data: {"type": "chunk", "text": "..."}
+        - data: {"type": "citation", "citations": [...]}
+        - data: {"type": "metadata", "severity": "...", "followup_questions": [...]}
+        - data: {"type": "done"}
+    """
+    if not location_id:
+        raise HTTPException(status_code=400, detail="location_id is required for streaming")
+
+    location_context = f"{location_id} airport"
+    brand_context = f"{brand}" if brand else "all brands at"
+    prompt = HIGHLIGHT_PROMPT_TEMPLATE.format(
+        location_context=location_context,
+        brand_context=brand_context
+    )
+
+    def event_generator():
+        full_text = ""
+        all_citations = []
+
+        try:
+            for event in chat_engine.chat_stream(prompt):
+                if event["type"] == "chunk":
+                    full_text += event["text"]
+                    yield f"data: {json.dumps(event)}\n\n"
+                elif event["type"] == "citation":
+                    all_citations.extend(event.get("citations", []))
+                    yield f"data: {json.dumps(event)}\n\n"
+                elif event["type"] == "done":
+                    # Extract severity and followups via a separate LLM call
+                    analysis = full_text.strip()
+                    from utils.bedrock import BedrockClient
+                    bedrock = BedrockClient()
+                    try:
+                        extraction_prompt = HIGHLIGHT_EXTRACTION_PROMPT.format(analysis=analysis)
+                        extraction_response = bedrock.invoke(extraction_prompt, max_tokens=300, temperature=0.3)
+                        parsed = _parse_highlight_response(extraction_response)
+                        parsed["analysis"] = analysis
+                    except Exception as e:
+                        logger.error(f"Stream extraction failed, using defaults: {e}")
+                        parsed = _parse_highlight_response(analysis)
+
+                    # Cache the result
+                    db.save_highlight(
+                        location_id=location_id,
+                        brand=brand,
+                        analysis=parsed["analysis"],
+                        severity=parsed["severity"],
+                        followup_questions=parsed["followup_questions"],
+                        citations=all_citations
+                    )
+
+                    # Send metadata event before done
+                    yield f"data: {json.dumps({'type': 'metadata', 'severity': parsed['severity'], 'followup_questions': parsed['followup_questions']})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Highlight stream error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 # ============ COMPETITIVE ANALYSIS APIs ============
