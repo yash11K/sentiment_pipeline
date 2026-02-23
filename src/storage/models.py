@@ -29,12 +29,10 @@ class Review(Base):
     review_date = Column(Date)
     relative_date = Column(String(100))
     language = Column(String(10))
-    raw_json = Column(Text)
     ingested_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationship to enrichment
     enrichment = relationship("Enrichment", back_populates="review", uselist=False)
-    embedding = relationship("Embedding", back_populates="review", uselist=False)
     
     __table_args__ = (
         Index('idx_reviews_location_date', 'location_id', 'review_date'),
@@ -76,15 +74,22 @@ class InsightsCache(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class Embedding(Base):
-    __tablename__ = 'embeddings'
-    
+class HighlightCache(Base):
+    __tablename__ = 'highlight_cache'
+
     id = Column(Integer, primary_key=True, autoincrement=True)
-    review_id = Column(String(255), ForeignKey('reviews.review_id', ondelete='CASCADE'), unique=True, nullable=False)
-    embedding = Column(Text)  # Store as JSON string for PostgreSQL compatibility
+    location_id = Column(String(10), nullable=False, index=True)
+    brand = Column(String(100), nullable=True, index=True)
+    analysis = Column(Text, nullable=False)
+    severity = Column(String(20), nullable=False)
+    followup_questions = Column(Text)  # JSON array
+    citations = Column(Text)  # JSON array
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    review = relationship("Review", back_populates="embedding")
+
+    __table_args__ = (
+        Index('idx_highlight_location_brand', 'location_id', 'brand'),
+    )
+
 
 
 class Location(Base):

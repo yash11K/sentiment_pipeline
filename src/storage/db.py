@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 
 from storage.models import (
-    Base, Review, Enrichment, InsightsCache, Embedding, 
+    Base, Review, Enrichment, InsightsCache, HighlightCache,
     Location, IngestionFile, create_db_engine, get_database_url
 )
 from utils.logger import get_logger
@@ -74,8 +74,7 @@ class Database:
                 reviewer_type=review.get('reviewer_type'),
                 review_date=review.get('review_date'),
                 relative_date=review.get('relative_date'),
-                language=review.get('language', 'en'),
-                raw_json=review.get('raw_json')
+                language=review.get('language', 'en')
             )
             session.add(db_review)
             session.flush()
@@ -144,7 +143,6 @@ class Database:
             'review_date': review.review_date,
             'relative_date': review.relative_date,
             'language': review.language,
-            'raw_json': review.raw_json,
             'ingested_at': review.ingested_at.isoformat() if review.ingested_at else None
         }
     
@@ -394,7 +392,7 @@ class Database:
             ).all()
             return [r.s3_key for r in records]
     def delete_reviews_by_ids(self, review_ids: List[str]) -> int:
-        """Delete reviews by list of review_ids. CASCADE handles enrichments/embeddings."""
+        """Delete reviews by list of review_ids. CASCADE handles enrichments."""
         if not review_ids:
             return 0
         with self.get_session() as session:
@@ -469,5 +467,44 @@ class Database:
                 representative_quotes=json.dumps(insights.get('representative_quotes', [])),
                 anomalies=json.dumps(insights.get('anomalies', [])),
                 generated_summary=insights.get('generated_summary')
+            )
+            session.add(record)
+
+    def get_cached_highlight(self, location_id: str, brand: str = None) -> Optional[Dict]:
+        """Get cached highlight for a location/brand combo"""
+        with self.get_session() as session:
+            query = session.query(HighlightCache).filter(
+                HighlightCache.location_id == location_id
+            )
+            if brand:
+                query = query.filter(HighlightCache.brand == brand)
+            else:
+                query = query.filter(HighlightCache.brand.is_(None))
+
+            record = query.order_by(HighlightCache.created_at.desc()).first()
+            if not record:
+                return None
+
+            return {
+                'location_id': record.location_id,
+                'brand': record.brand,
+                'analysis': record.analysis,
+                'severity': record.severity,
+                'followup_questions': json.loads(record.followup_questions) if record.followup_questions else [],
+                'citations': json.loads(record.citations) if record.citations else [],
+                'created_at': record.created_at.isoformat() if record.created_at else None
+            }
+
+    def save_highlight(self, location_id: str, brand: str, analysis: str,
+                       severity: str, followup_questions: list, citations: list):
+        """Save generated highlight to cache"""
+        with self.get_session() as session:
+            record = HighlightCache(
+                location_id=location_id,
+                brand=brand,
+                analysis=analysis,
+                severity=severity,
+                followup_questions=json.dumps(followup_questions),
+                citations=json.dumps(citations)
             )
             session.add(record)

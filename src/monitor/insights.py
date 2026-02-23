@@ -93,21 +93,24 @@ class InsightGenerator:
         return quotes
     
     def _cache_insights(self, insights: Dict):
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO insights_cache 
-            (location_id, time_window, top_topics, key_drivers, representative_quotes, generated_summary)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (insights['location_id'], insights['time_window'], json.dumps(insights['top_topics']),
-              json.dumps(insights['key_drivers']), json.dumps(insights['representative_quotes']), json.dumps(insights)))
-        conn.commit()
-        conn.close()
+        self.db.save_insights(
+            location_id=insights['location_id'],
+            time_window=insights['time_window'],
+            insights={
+                'top_topics': insights.get('top_topics', []),
+                'key_drivers': insights.get('key_drivers', []),
+                'representative_quotes': insights.get('representative_quotes', []),
+                'generated_summary': json.dumps(insights),
+            }
+        )
     
     def get_cached_insights(self, location_id: str) -> Dict:
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT generated_summary FROM insights_cache WHERE location_id = ? ORDER BY created_at DESC LIMIT 1", (location_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return json.loads(row[0]) if row else {}
+        result = self.db.get_cached_insights(location_id)
+        if not result:
+            return {}
+        if result.get('generated_summary'):
+            try:
+                return json.loads(result['generated_summary'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return result

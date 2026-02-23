@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from storage.models import Base, Review, Enrichment, Embedding, IngestionFile, Location
+from storage.models import Base, Review, Enrichment, IngestionFile, Location
 from storage.db import Database
 
 import hypothesis.strategies as st
@@ -145,7 +145,6 @@ def make_review_dict(
         "relative_date": relative_date,
         "review_date": date(2025, 1, 1),
         "language": "en",
-        "raw_json": json.dumps(raw),
     }
 
 

@@ -6,7 +6,7 @@ import json
 import pytest
 from datetime import datetime
 
-from storage.models import Review, Enrichment, Embedding, IngestionFile, Location
+from storage.models import Review, Enrichment, IngestionFile, Location
 
 
 class TestDatabaseFixture:
@@ -20,7 +20,6 @@ class TestDatabaseFixture:
         table_names = inspector.get_table_names()
         assert "reviews" in table_names
         assert "enrichments" in table_names
-        assert "embeddings" in table_names
         assert "ingestion_files" in table_names
         assert "locations" in table_names
 
@@ -87,9 +86,6 @@ class TestSampleDataHelpers:
         assert review["brand"] == "avis"
         assert review["rating"] == 4.0
         assert review["review_text"] == "Great service at the counter."
-        assert "raw_json" in review
-        raw = json.loads(review["raw_json"])
-        assert "review_id" in raw
 
     def test_make_review_dict_custom(self):
         from tests.conftest import make_review_dict
