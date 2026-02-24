@@ -21,6 +21,7 @@ from monitor.insights import InsightGenerator
 from explore.chat import ChatEngine
 from explore.filters import FilterEngine
 from utils.logger import get_logger
+from utils.prompts import HIGHLIGHT_PROMPT_TEMPLATE
 
 logger = get_logger(__name__)
 
@@ -473,46 +474,37 @@ async def get_recent_reviews(location_id: Optional[str] = None, limit: int = 10)
     return {"reviews": reviews}
 
 
-HIGHLIGHT_PROMPT_TEMPLATE = """What are the most critical problems at the {brand_context} {location_context} car rental location that need immediate attention? Analyze customer reviews and identify the key issues organized by severity. Be specific and reference patterns from actual customer complaints. Focus on actionable issues that management can address."""
-
-
-HIGHLIGHT_EXTRACTION_PROMPT = """Based on the following analysis of customer reviews, extract two things:
-
-1. An overall severity classification — exactly one of: critical, warning, or info.
-   - critical: widespread systemic failures affecting most customers
-   - warning: recurring issues impacting a significant portion of customers but not universal
-   - info: isolated or minor complaints without a clear pattern
-
-2. Exactly 3 followup questions a location manager would want to ask to dig deeper.
-
-Return your response in this exact format and nothing else:
-
-SEVERITY: <critical|warning|info>
-
-FOLLOWUP_QUESTIONS:
-1. <question>
-2. <question>
-3. <question>
-
-Here is the analysis:
-{analysis}"""
-
 
 def _parse_highlight_response(raw_response: str) -> Dict:
-    """Parse the structured KB response into analysis, severity, and followup questions."""
-    analysis = raw_response.strip()
+    """Parse the structured KB response into overview, severity, problems, and followup questions.
+
+    Severity is derived from the emoji prefix on the first problem:
+        ⚠️ → critical, 🔶 → warning, ℹ️ → info
+    """
+    overview = ""
     severity = "info"
     followup_questions = []
 
-    # If the KB response accidentally includes our structured markers, extract them
-    if "SEVERITY:" in raw_response:
-        sev_section = raw_response.split("SEVERITY:")[1]
-        sev_line = sev_section.strip().split("\n")[0].strip().lower()
-        if sev_line in ("critical", "warning", "info"):
-            severity = sev_line
+    # Extract OVERVIEW section
+    if "OVERVIEW:" in raw_response:
+        ov_section = raw_response.split("OVERVIEW:", 1)[1]
+        # Everything until the next section marker
+        for marker in ("PROBLEMS:", "FOLLOWUPS:"):
+            if marker in ov_section:
+                ov_section = ov_section.split(marker, 1)[0]
+        overview = ov_section.strip()
 
-    if "FOLLOWUP_QUESTIONS:" in raw_response:
-        fq_section = raw_response.split("FOLLOWUP_QUESTIONS:")[1].strip()
+    # Derive severity from emoji on first problem line
+    if "⚠️" in raw_response:
+        severity = "critical"
+    elif "🔶" in raw_response:
+        severity = "warning"
+    elif "ℹ️" in raw_response:
+        severity = "info"
+
+    # Extract FOLLOWUPS section
+    if "FOLLOWUPS:" in raw_response:
+        fq_section = raw_response.split("FOLLOWUPS:", 1)[1].strip()
         for line in fq_section.strip().split("\n"):
             line = line.strip()
             if line and line[0].isdigit() and "." in line:
@@ -524,13 +516,17 @@ def _parse_highlight_response(raw_response: str) -> Dict:
         followup_questions = [
             "What are the most common complaints at this location?",
             "How does this location compare to competitors?",
-            "What has changed at this location over the last 30 days?"
+            "What operational changes could improve the customer experience?",
         ]
+
+    # The full response is the analysis (overview + problems together)
+    analysis = raw_response.strip()
 
     return {
         "analysis": analysis,
+        "overview": overview,
         "severity": severity,
-        "followup_questions": followup_questions[:3]
+        "followup_questions": followup_questions[:3],
     }
 
 
@@ -585,19 +581,8 @@ async def get_highlight(
     raw_answer = result.get("answer", "")
     citations = result.get("citations", [])
 
-    analysis = raw_answer.strip()
-
-    # Step 2: Extract severity and followup questions via a separate LLM call
-    from utils.bedrock import BedrockClient
-    bedrock = BedrockClient()
-    try:
-        extraction_prompt = HIGHLIGHT_EXTRACTION_PROMPT.format(analysis=analysis)
-        extraction_response = bedrock.invoke(extraction_prompt, max_tokens=300, temperature=0.3)
-        parsed = _parse_highlight_response(extraction_response)
-        parsed["analysis"] = analysis
-    except Exception as e:
-        logger.error(f"Highlight extraction failed, using defaults: {e}")
-        parsed = _parse_highlight_response(analysis)
+    # Parse the structured response (severity from emoji, followups inline)
+    parsed = _parse_highlight_response(raw_answer)
 
     # Cache the result
     db.save_highlight(
@@ -663,18 +648,8 @@ async def stream_highlight(
                     all_citations.extend(event.get("citations", []))
                     yield f"data: {json.dumps(event)}\n\n"
                 elif event["type"] == "done":
-                    # Extract severity and followups via a separate LLM call
-                    analysis = full_text.strip()
-                    from utils.bedrock import BedrockClient
-                    bedrock = BedrockClient()
-                    try:
-                        extraction_prompt = HIGHLIGHT_EXTRACTION_PROMPT.format(analysis=analysis)
-                        extraction_response = bedrock.invoke(extraction_prompt, max_tokens=300, temperature=0.3)
-                        parsed = _parse_highlight_response(extraction_response)
-                        parsed["analysis"] = analysis
-                    except Exception as e:
-                        logger.error(f"Stream extraction failed, using defaults: {e}")
-                        parsed = _parse_highlight_response(analysis)
+                    # Parse severity and followups directly from the streamed response
+                    parsed = _parse_highlight_response(full_text)
 
                     # Cache the result
                     db.save_highlight(

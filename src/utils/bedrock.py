@@ -4,6 +4,10 @@ import os
 from typing import Dict, List, Optional
 from config import config
 from utils.logger import get_logger
+from utils.prompts import (
+    ENRICH_BATCH_PROMPT,
+    LOCATION_INFO_PROMPT,
+)
 
 logger = get_logger(__name__)
 
@@ -313,51 +317,8 @@ class BedrockClient:
             logger.error(f"Error invoking Bedrock: {e}")
             return {} if return_raw else ""
 
-    def extract_topics(self, review_text: str) -> List[str]:
-        """Extract topics from review text"""
-        prompt = f"""Analyze this car rental review and extract the main topics/themes.
-            Choose from: wait_times, staff_behavior, vehicle_condition, pricing_fees, reservation_issues,
-            customer_service, cleanliness, preferred_program, tolls_epass, insurance, location_access, shuttle_service, upgrade_downgrade, damage_claims.
 
-            Review: {review_text}
 
-            Return ONLY a JSON array of topics, e.g., ["wait_times", "staff_behavior"]"""
-
-        response = self.invoke(prompt, max_tokens=100, temperature=0.3)
-        try:
-            return json.loads(self._extract_json(response))
-        except:
-            return []
-
-    def analyze_sentiment(self, review_text: str) -> Dict:
-        """Analyze sentiment of review"""
-        prompt = f"""Analyze the sentiment of this review.
-Return ONLY a JSON object with "sentiment" (positive/negative/neutral) and "score" (-1 to 1).
-
-Review: {review_text}
-
-Format: {{"sentiment": "negative", "score": -0.8}}"""
-
-        response = self.invoke(prompt, max_tokens=50, temperature=0.1)
-        try:
-            return json.loads(self._extract_json(response))
-        except:
-            return {"sentiment": "neutral", "score": 0.0}
-
-    def extract_entities(self, review_text: str) -> List[str]:
-        """Extract named entities from review"""
-        prompt = f"""Extract key entities from this review (employee names, programs like "Preferred",
-specific issues like "EZ Pass", locations, etc.).
-
-Review: {review_text}
-
-Return ONLY a JSON array of entities, e.g., ["Preferred", "EZ Pass"]"""
-
-        response = self.invoke(prompt, max_tokens=100, temperature=0.3)
-        try:
-            return json.loads(self._extract_json(response))
-        except:
-            return []
 
     def enrich_reviews_batch(self, reviews: List[Dict]) -> List[Dict]:
         """Enrich multiple reviews in a single LLM call with enhanced metadata.
@@ -373,53 +334,7 @@ Return ONLY a JSON array of entities, e.g., ["Preferred", "EZ Pass"]"""
 
     """
 
-        prompt = f"""Analyze these car rental reviews and extract comprehensive insights for each.
-
-    Topics (choose applicable): wait_times, staff_behavior, vehicle_condition, pricing_fees, reservation_issues, customer_service, cleanliness, preferred_program, tolls_epass, insurance, location_access, shuttle_service, upgrade_downgrade, damage_claims
-
-    {reviews_text}
-
-    Return ONLY a JSON array with this exact structure:
-    [
-      {{
-    "review_id": "<id>",
-    "topics": ["topic1", "topic2"],
-    "sentiment": "positive|negative|neutral",
-    "sentiment_score": 0.5,
-    "entities": ["entity1"],
-    "key_phrases": ["short phrase capturing main complaint/praise"],
-    "urgency_level": "low|medium|high|critical",
-    "actionable": true|false,
-    "suggested_action": "brief action item if actionable, null otherwise"
-      }}
-    ]
-
-    CRITICAL SENTIMENT RULES (follow strictly):
-    - sentiment MUST be exactly one of: "positive", "negative", or "neutral" (NO other values)
-    - DEFAULT TO NEGATIVE when in doubt - car rental reviews are typically complaints
-    - Star rating is the PRIMARY signal:
-      * 1-2 stars = ALWAYS "negative" (no exceptions)
-      * 3 stars = "negative" unless content is clearly praising the service
-      * 4 stars = "positive" unless there are specific complaints mentioned
-      * 5 stars = "positive"
-    - Content analysis (secondary):
-      * ANY complaint, issue, problem, or frustration = lean toward "negative"
-      * Words like "but", "however", "although" followed by issues = "negative"
-      * If review mentions ANY negative experience, even with positives, classify as "negative"
-      * Only classify as "positive" if the review is genuinely praising without complaints
-    - "neutral" should be RARE:
-      * Only use for purely factual statements with no opinion
-      * Never use "neutral" for 1-3 star reviews
-      * Never use "neutral" if ANY complaint is mentioned
-    - sentiment_score: -1.0 to 1.0
-      * 1-2 stars: -0.5 to -1.0
-      * 3 stars: -0.3 to -0.6 (lean negative)
-      * 4 stars: 0.3 to 0.6
-      * 5 stars: 0.6 to 1.0
-    - urgency_level: critical=safety/legal issues, high=service failures affecting many, medium=individual complaints, low=minor feedback
-    - actionable: true if the review suggests a specific improvement opportunity
-    - key_phrases: 1-3 short phrases (max 8 words each) capturing the essence
-    """
+        prompt = ENRICH_BATCH_PROMPT.format(reviews_text=reviews_text)
 
         logger.llm("Calling AWS Bedrock (Claude)...")
         response = self.invoke(prompt, max_tokens=16000, temperature=0.3)
@@ -441,16 +356,7 @@ Return ONLY a JSON array of entities, e.g., ["Preferred", "EZ Pass"]"""
         Returns:
             Dict with 'name' and 'address' keys
         """
-        prompt = f"""Given the location code "{location_code}", identify what location this refers to (likely an airport IATA code or city code).
-
-Return ONLY a JSON object with:
-- "name": The full official name of the location (e.g., "John F. Kennedy International Airport")
-- "address": The full address including city, state/region, and country (e.g., "Queens, NY 11430, USA")
-
-If you cannot identify the location, return:
-{{"name": "{location_code}", "address": "{location_code}"}}
-
-Return ONLY the JSON object, no explanation."""
+        prompt = LOCATION_INFO_PROMPT.format(location_code=location_code)
 
         response = self.invoke(prompt, max_tokens=200, temperature=0.1)
         try:
