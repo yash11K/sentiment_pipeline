@@ -8,6 +8,7 @@ from datetime import datetime
 import sys
 import json
 import uuid
+import time
 import threading
 from pathlib import Path
 
@@ -611,7 +612,8 @@ async def get_highlight(
 @app.get("/api/dashboard/highlight/stream")
 async def stream_highlight(
     location_id: Optional[str] = None,
-    brand: Optional[str] = None
+    brand: Optional[str] = None,
+    no_cache: bool = False
 ):
     """Stream a highlight briefing via Server-Sent Events.
 
@@ -619,15 +621,56 @@ async def stream_highlight(
     by the KB, then a final event delivers the parsed metadata (severity,
     followup questions) and caches the result.
 
+    When a cached result exists (and no_cache is not set), the cached
+    analysis is replayed as SSE chunks so the browser experience is
+    identical.
+
+    Query params:
+        location_id: IATA airport code (e.g. JFK, LAX)
+        brand: brand name filter
+        no_cache: if true, bypass cache and call Bedrock fresh
+
     SSE event types:
         - data: {"type": "chunk", "text": "..."}
         - data: {"type": "citation", "citations": [...]}
-        - data: {"type": "metadata", "severity": "...", "followup_questions": [...]}
+        - data: {"type": "metadata", "severity": "...", "followup_questions": [...], "cached": bool, "generated_at": "..."}
         - data: {"type": "done"}
     """
     if not location_id:
         raise HTTPException(status_code=400, detail="location_id is required for streaming")
 
+    # Check cache first unless caller explicitly wants fresh data
+    cached = None
+    if not no_cache:
+        cached = db.get_cached_highlight(location_id, brand)
+
+    if cached:
+        # Replay cached analysis as SSE chunks so the browser sees the
+        # same event shape it would get from a live Bedrock stream.
+        def cached_event_generator():
+            analysis = cached["analysis"]
+            chunk_size = 80
+            for i in range(0, len(analysis), chunk_size):
+                yield f"data: {json.dumps({'type': 'chunk', 'text': analysis[i:i+chunk_size]})}\n\n"
+                time.sleep(0.075)
+
+            if cached["citations"]:
+                yield f"data: {json.dumps({'type': 'citation', 'citations': cached['citations']})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'metadata', 'severity': cached['severity'], 'followup_questions': cached['followup_questions'], 'cached': True, 'generated_at': cached['created_at']})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            cached_event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
+
+    # No cache hit (or no_cache=True) — stream from Bedrock
     location_context = f"{location_id} airport"
     brand_context = f"{brand}" if brand else "all brands at"
     prompt = HIGHLIGHT_PROMPT_TEMPLATE.format(
@@ -648,10 +691,8 @@ async def stream_highlight(
                     all_citations.extend(event.get("citations", []))
                     yield f"data: {json.dumps(event)}\n\n"
                 elif event["type"] == "done":
-                    # Parse severity and followups directly from the streamed response
                     parsed = _parse_highlight_response(full_text)
 
-                    # Cache the result
                     db.save_highlight(
                         location_id=location_id,
                         brand=brand,
@@ -661,8 +702,7 @@ async def stream_highlight(
                         citations=all_citations
                     )
 
-                    # Send metadata event before done
-                    yield f"data: {json.dumps({'type': 'metadata', 'severity': parsed['severity'], 'followup_questions': parsed['followup_questions']})}\n\n"
+                    yield f"data: {json.dumps({'type': 'metadata', 'severity': parsed['severity'], 'followup_questions': parsed['followup_questions'], 'cached': False, 'generated_at': datetime.now().isoformat()})}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
@@ -678,6 +718,7 @@ async def stream_highlight(
             "X-Accel-Buffering": "no",
         }
     )
+
 
 
 # ============ COMPETITIVE ANALYSIS APIs ============

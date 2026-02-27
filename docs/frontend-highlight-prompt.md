@@ -87,7 +87,8 @@ interface HighlightState {
   severity: 'critical' | 'warning' | 'info' | null;
   followupQuestions: string[];
   citations: Citation[];
-  cachedAt: string | null;    // timestamp if served from cache
+  cached: boolean | null;     // true if the response was served from cache
+  generatedAt: string | null; // ISO timestamp of when the analysis was generated
   errorMessage: string | null;
 }
 ```
